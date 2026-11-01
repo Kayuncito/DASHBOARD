@@ -3084,7 +3084,25 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
   const sendBtn = $('#agentSend');
   const stopBtn = $('#agentStop');
   const micBtn = $('#agentMic');
-  let sample = null, toolsOk = false, busy = null;
+  let sample = null, toolsOk = false, busy = null, tier = 'quick';
+  // mode: checking (conectando) · tools (IA con herramientas) · plan (IA que devuelve un plan) · basic (sin IA)
+  const inClaude = !!(window.claude && typeof window.claude.use === 'function');
+  let mode = inClaude ? 'checking' : 'basic';
+  let basicReason = inClaude ? '' : 'Abriste la página fuera de Claude (GitHub Pages o archivo descargado), donde no hay IA disponible.';
+  const MODE_LABEL = { checking: 'Conectando con Claude…', tools: 'Con IA (Claude)', plan: 'Con IA (Claude)', basic: 'Sin IA · modo básico' };
+  let welcome = null;
+  function welcomeText() {
+    if (mode === 'checking') return 'Conectando con Claude… Puedes escribir tu petición mientras tanto.';
+    if (mode === 'basic') return `Estoy en modo básico, sin IA. ${basicReason} Entiendo comandos como “elimina duplicados”, “limpia los datos”, “filtra Región = Norte”, “gráfica de Ventas por Región”, “elimina columna X”, “renombra X a Y”, “abre hoja X” o “deshacer”.`;
+    return 'Hola. Dime qué quieres hacer con tus datos: limpiarlos, preguntarme algo, filtrar, crear gráficas o combinar hojas. Puedes escribir o dictar.';
+  }
+  function setMode(m, reason) {
+    mode = m;
+    if (reason) basicReason = reason;
+    $('#agentMode').textContent = MODE_LABEL[m];
+    $('#agentMode').classList.toggle('rec', m === 'tools' || m === 'plan');
+    if (welcome && log.firstChild === welcome && log.childElementCount === 1) welcome.textContent = welcomeText();
+  }
   const turns = [];
 
   function bubble(role, text) {
@@ -3131,11 +3149,7 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
     panel.hidden = false;
     document.body.classList.add('agent-open');
     suggestions();
-    if (!log.childElementCount) {
-      bubble('assistant', sample && toolsOk
-        ? 'Hola. Dime qué quieres hacer con tus datos: limpiarlos, preguntarme algo, filtrar, crear gráficas o combinar hojas. Puedes escribir o usar el micrófono.'
-        : 'Hola. Estás en modo básico (sin IA): entiendo comandos como “elimina duplicados”, “limpia los datos”, “filtra Región = Norte”, “gráfica de Ventas por Región”, “elimina columna X”, “renombra X a Y”, “abre hoja X” o “deshacer”. Para pedir cualquier cosa con tus palabras, abre esta página dentro de Claude.');
-    }
+    if (!log.childElementCount) welcome = bubble('assistant', welcomeText());
     setTimeout(() => input.focus(), 50);
   }
   function close() { panel.hidden = true; document.body.classList.remove('agent-open'); }
@@ -3157,7 +3171,8 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
     input.value = '';
     bubble('user', text);
 
-    if (!(sample && toolsOk)) {
+    if (mode === 'checking') await ready;
+    if (mode === 'basic') {
       try {
         const out = basic(text);
         bubble('assistant', out || 'No entendí ese comando en modo básico. Prueba con: “elimina duplicados”, “limpia los datos”, “filtra Región = Norte”, “gráfica de Ventas por Región” o “deshacer”.');
@@ -3168,30 +3183,48 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
 
     turns.push({ role: 'user', content: text });
     const history = turns.slice(-7);
-    const msgs = history.map((t, i) => (i === history.length - 1
-      ? { role: 'user', content: `${INSTRUCTIONS}\n\n=== ESTADO ACTUAL DEL DASHBOARD ===\n${context()}\n=== FIN DEL ESTADO ===\n\nPetición del usuario: ${t.content}` }
-      : t));
     const ctl = new AbortController();
     setBusy(ctl);
     const out = bubble('assistant', 'Pensando…');
     out.classList.add('pending');
-    const tools = TOOLS.map((tool) => ({
-      ...tool,
-      execute: (args, cx) => {
-        if (cx && cx.signal && cx.signal.aborted) throw new Error('Cancelado');
-        const label = { consultar: 'Consultando datos', crear_grafica: 'Creando gráfica', quitar_grafica: 'Quitando gráfica', filtrar: 'Aplicando filtro', limpieza: 'Limpiando datos', editar_datos: 'Editando datos', hojas: 'Trabajando con hojas' }[tool.name];
-        stepNote(`⚙ ${label}…`);
-        log.append(out);
-        const res = ACTIONS[tool.name](args || {});
-        suggestions();
-        return res;
-      },
-    }));
+    const onText = ({ text: t }) => { out.classList.remove('pending'); out.textContent = t; log.scrollTop = log.scrollHeight; };
+    const LABEL = { consultar: 'Consultando datos', crear_grafica: 'Creando gráfica', quitar_grafica: 'Quitando gráfica', filtrar: 'Aplicando filtro', limpieza: 'Limpiando datos', editar_datos: 'Editando datos', hojas: 'Trabajando con hojas' };
+    const run = (name, args) => {
+      if (!ACTIONS[name]) throw new Error(`Herramienta desconocida: ${name}`);
+      stepNote(`⚙ ${LABEL[name]}…`);
+      log.append(out);
+      const res = ACTIONS[name](args || {});
+      suggestions();
+      return res;
+    };
+    const withState = (extra) => `${INSTRUCTIONS}\n\n=== ESTADO ACTUAL DEL DASHBOARD ===\n${context()}\n=== FIN DEL ESTADO ===\n\n${extra}`;
     try {
-      const { text: answer } = await sample(msgs, {
-        tools, modelTier: 'quick', signal: ctl.signal,
-        onText: ({ text: t }) => { out.classList.remove('pending'); out.textContent = t; log.scrollTop = log.scrollHeight; },
-      });
+      let answer;
+      if (mode === 'tools') {
+        const msgs = history.map((t, i) => (i === history.length - 1 ? { role: 'user', content: withState(`Petición del usuario: ${t.content}`) } : t));
+        const tools = TOOLS.map((tool) => ({ ...tool, execute: (args, cx) => { if (cx && cx.signal && cx.signal.aborted) throw new Error('Cancelado'); return run(tool.name, args); } }));
+        ({ text: answer } = await sample(msgs, { tools, modelTier: tier, signal: ctl.signal, onText }));
+      } else {
+        // Plan: Claude devuelve las acciones en JSON y la página las ejecuta.
+        const catalog = TOOLS.map((t) => `- ${t.name}: ${t.description} Argumentos (JSON Schema): ${JSON.stringify(t.inputSchema || {})}`).join('\n');
+        const ask = withState(`Herramientas disponibles (las ejecuta la página):\n${catalog}\n\nResponde SOLO con un objeto JSON: {"acciones":[{"herramienta":"nombre","args":{...}}],"respuesta":"mensaje breve para el usuario"}. Usa "acciones": [] si solo hace falta responder o preguntar algo. Si necesitas cifras para responder, incluye acciones "consultar" y deja "respuesta" vacía: después recibirás los resultados.\n\nPetición del usuario: ${text}`);
+        const msgs = history.map((t, i) => (i === history.length - 1 ? { role: 'user', content: ask } : t));
+        const plan = await sample.json(msgs, { modelTier: tier, signal: ctl.signal });
+        const acts = Array.isArray(plan && plan.acciones) ? plan.acciones.slice(0, 8) : [];
+        const results = [];
+        for (const a of acts) {
+          if (ctl.signal.aborted) break;
+          try { results.push({ herramienta: a.herramienta, resultado: run(String(a.herramienta), a.args) }); }
+          catch (err) { results.push({ herramienta: a.herramienta, error: err.message }); }
+        }
+        answer = plan && typeof plan.respuesta === 'string' ? plan.respuesta.trim() : '';
+        const needFollow = results.some((r) => r.error || r.herramienta === 'consultar') || !answer;
+        if (needFollow && results.length) {
+          const follow = `${INSTRUCTIONS}\n\nEl usuario pidió: "${text}". Ya se ejecutaron estas acciones y estos son los resultados:\n${JSON.stringify(results).slice(0, 12000)}\n\nEscribe la respuesta final para el usuario en español, breve, con las cifras. Si hubo errores, explica qué no se pudo hacer.`;
+          ({ text: answer } = await sample(follow, { modelTier: tier, signal: ctl.signal, onText, cache: false }));
+        }
+        if (!answer) answer = results.length ? results.map((r) => (r.error ? `No se pudo: ${r.error}` : typeof r.resultado === 'string' ? r.resultado : JSON.stringify(r.resultado))).join('\n') : 'Listo.';
+      }
       out.classList.remove('pending');
       out.textContent = answer;
       turns.push({ role: 'assistant', content: answer });
@@ -3199,12 +3232,16 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
       out.classList.remove('pending');
       const code = e && e.code;
       if (code === 'cancelled') out.textContent = (e.text || '') + ' (detenido)';
-      else if (code === 'not_granted' || code === 'sampling_disabled' || code === 'not_declared' || code === 'capability_disabled' || code === 'tools_unavailable') {
-        toolsOk = false;
-        out.textContent = 'No tengo permiso para usar Claude en esta página, así que cambio a modo básico (comandos simples).';
+      else if (code === 'tools_unavailable') {
+        setMode('plan');
+        out.textContent = 'Ajusté la forma de trabajar para esta vista. Envía tu petición otra vez, por favor.';
+      } else if (code === 'not_granted' || code === 'sampling_disabled' || code === 'not_declared' || code === 'capability_disabled' || code === 'capability_removed') {
+        setMode('basic', code === 'not_granted' ? 'No se dio permiso para usar Claude en esta página (puedes permitirlo desde el menú de permisos del artefacto y recargar).' : 'Claude no está disponible para esta cuenta o vista.');
+        out.textContent = `Cambio a modo básico: ${basicReason}`;
       } else if (code === 'rate_limited') out.textContent = 'Se alcanzó el límite de uso por ahora. Intenta de nuevo en un momento.';
       else if (code === 'session_expired') out.textContent = 'Tu sesión de Claude expiró; vuelve a iniciar sesión.';
       else if (code === 'refused') out.textContent = 'No puedo ayudar con esa petición. Intenta pedirlo de otra forma.';
+      else if (code === 'invalid_json') out.textContent = 'No entendí bien la respuesta de la IA. Intenta pedirlo con otras palabras.';
       else out.textContent = (e && e.text ? e.text + '\n\n' : '') + 'Hubo un problema de conexión. Intenta de nuevo.';
       turns.pop();
     } finally {
@@ -3249,18 +3286,21 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
 
   // ---------- Conexión con Claude ----------
 
-  (async () => {
-    if (!(window.claude && typeof window.claude.use === 'function')) return;
+  const ready = (async () => {
+    if (!inClaude) { setMode('basic'); return; }
     try {
       const s = await window.claude.use('sample');
-      if (!s) return;
+      if (!s) { setMode('basic', 'Claude no está disponible en esta vista (puede faltar permiso o no estar habilitado para tu cuenta).'); return; }
       const lim = await s.limits().catch(() => null);
       sample = s;
       toolsOk = !!(lim && lim.tools);
-      $('#agentMode').textContent = toolsOk ? 'Con IA (Claude)' : 'Modo básico';
-    } catch { /* sin IA */ }
+      if (lim && Array.isArray(lim.modelTiers) && !lim.modelTiers.includes('quick')) tier = lim.modelTiers.includes('default') ? 'default' : undefined;
+      setMode(toolsOk ? 'tools' : 'plan');
+    } catch {
+      setMode('basic', 'No se pudo conectar con Claude.');
+    }
   })();
-
+  setMode(mode);
 })();
 
 </script>
