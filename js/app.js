@@ -32,7 +32,7 @@
     /(cantidad|unidades|qty|quantity|piezas|volumen)/i,
     /(valor|value|saldo|balance)/i,
   ];
-  const metricRank = (c) => { const i = METRIC_TIERS.findIndex((re) => re.test(c.name)); return i < 0 ? (/(precio|price|tarifa|rate|%)/i.test(c.name) ? 99 : 50) : i; };
+  const metricRank = (c) => { if (c.percent) return 99; const i = METRIC_TIERS.findIndex((re) => re.test(c.name)); return i < 0 ? (/(precio|price|tarifa|rate|%)/i.test(c.name) ? 99 : 50) : i; };
 
   const state = {
     fileName: '',
@@ -228,14 +228,18 @@
     const add = (c) => out.push({ id: state.nextId++, limit: 10, sort: null, title: '', ...c });
 
     if (date) add({ type: 'area', x: date.name, y, agg, grain: D.autoGrain(date), wide: true });
-    if (cats[0]) add({ type: 'bar', x: cats[0].name, y, agg });
+    // Columna de nombres (una fila por elemento: estados, productos, clientes…).
+    const label = state.columns.find((c) => c.type === 'text' && !c.categorical && c.unique >= 3 && c.unique <= 500 && c.unique >= c.filled * 0.9 && !(c.values || []).every((v) => /^[\d\W_]+$/.test(v)));
+    if (label && m1) add({ type: 'hbar', x: label.name, y, agg: 'sum', limit: 15, other: false, wide: !date, title: `${y} por ${label.name} (top 15)` });
     const small = [...cats].filter((c) => c.unique <= 6).sort((a, b) => a.unique - b.unique)[0];
+    const main = cats.find((c) => c !== small) || null;
+    if (main) add({ type: 'bar', x: main.name, y, agg });
     if (small) add({ type: 'pie', x: small.name, y, agg, limit: 6 });
-    const restCats = cats.filter((c) => c !== cats[0] && c !== small);
+    const restCats = cats.filter((c) => c !== main && c !== small);
     if (restCats[0]) add({ type: 'hbar', x: restCats[0].name, y, agg });
     if (restCats[1] && m[1]) add({ type: 'hbar', x: restCats[1].name, y: m[1].name, agg: 'avg' });
     else if (restCats[1]) add({ type: 'bar', x: restCats[1].name, y, agg });
-    if (m.length >= 2 && out.length < 6) add({ type: 'scatter', x: m[0].name, y: m[1].name, agg: 'none' });
+    if (m.length >= 2 && !m[1].percent && out.length < 6) add({ type: 'scatter', x: m[0].name, y: m[1].name, agg: 'none' });
 
     if (!out.length) {
       const first = state.columns.find((c) => c.type === 'text') || state.columns[0];
@@ -365,6 +369,10 @@
     metrics().slice(0, 3).forEach((m) => {
       const sum = D.summarize(rows, m.name, 'sum');
       const avg = D.summarize(rows, m.name, 'avg');
+      if (m.percent) {
+        tiles.push({ label: `${m.name} · promedio`, value: D.fmtPct(avg), sub: `Mín. ${D.fmtPct(D.summarize(rows, m.name, 'min'))} · Máx. ${D.fmtPct(D.summarize(rows, m.name, 'max'))}` });
+        return;
+      }
       tiles.push({ label: `${m.name} · total`, value: D.fmtCompact(sum), title: D.fmtNum(sum), sub: `Promedio: ${D.fmtNum(avg)}` });
     });
     if (state.dateFilter) {
@@ -453,9 +461,12 @@
       ticks: { color: p.text, padding: 6, maxRotation: 0, autoSkip: true, callback(v) { const l = this.getLabelForValue ? this.getLabelForValue(v) : v; return typeof l === 'number' ? D.fmtCompact(l) : truncate(String(l), 18); } },
       title: title ? { display: true, text: title, color: p.muted } : undefined,
     });
+    const yc = c.y ? col(c.y) : null;
+    const yPct = !!(yc && yc.percent && ['sum', 'avg', 'min', 'max'].includes(c.agg));
+    const fmtV = (v) => (yPct ? D.fmtPct(v) : D.fmtNum(v));
     const valueAxis = (title) => ({
       grid: { color: p.grid, drawTicks: false }, border: { display: false }, beginAtZero: true,
-      ticks: { color: p.text, padding: 6, callback: (v) => D.fmtCompact(v) },
+      ticks: { color: p.text, padding: 6, callback: (v) => (yPct ? D.fmtPct(v) : D.fmtCompact(v)) },
       title: title ? { display: true, text: title, color: p.muted } : undefined,
     });
 
@@ -487,7 +498,7 @@
     const rows = filteredRows(own ? c.x : undefined);
     const isPie = c.type === 'pie';
     const limit = xc.type === 'text' ? (isPie ? Math.min(c.limit || 6, 7) : c.limit) : 0;
-    const data = D.aggregate(rows, xc, c.y, c.agg, { grain: c.grain, limit, sort: c.sort || undefined });
+    const data = D.aggregate(rows, xc, c.y, c.agg, { grain: c.grain, limit, sort: c.sort || undefined, noOther: c.other === false });
     if (!data.length) return null;
 
     const labels = data.map((d) => d.label);
@@ -506,7 +517,7 @@
       callbacks: {
         label: (ctx) => {
           const v = isPie ? ctx.parsed : (c.type === 'hbar' ? ctx.parsed.x : ctx.parsed.y);
-          let s = ` ${valueName}: ${D.fmtNum(v)}`;
+          let s = ` ${valueName}: ${fmtV(v)}`;
           if (isPie || c.agg === 'count' || c.agg === 'sum') {
             const tot = values.reduce((a, b) => a + (b || 0), 0);
             if (tot) s += ` (${D.fmtNum((v / tot) * 100)}%)`;
@@ -562,7 +573,7 @@
         interaction: { mode: 'nearest', axis: horizontal ? 'y' : 'x', intersect: false },
         plugins: { legend: { display: false }, tooltip: tooltipCb },
         scales: horizontal
-          ? { x: valueAxis(), y: { ...axis(), grid: { display: false } } }
+          ? { x: valueAxis(), y: { ...axis(), grid: { display: false }, ticks: { ...axis().ticks, autoSkip: data.length > 25 } } }
           : { x: { ...axis(), grid: { display: false } }, y: valueAxis() },
       },
     };
@@ -890,7 +901,7 @@
     if (q) {
       rows = rows.filter((r) => state.columns.some((c) => {
         const v = r[c.name];
-        return v !== null && D.fmtCell(v, c.type).toLowerCase().includes(q);
+        return v !== null && D.fmtCell(v, c.type, c.percent).toLowerCase().includes(q);
       }));
     }
     const { sort, dir } = state.table;
@@ -918,7 +929,7 @@
       class: c.type === 'number' ? 'num' : '', scope: 'col', 'aria-sort': sort === c.name ? (dir > 0 ? 'ascending' : 'descending') : 'none',
       onclick: () => { state.table.dir = state.table.sort === c.name ? -state.table.dir : 1; state.table.sort = c.name; renderTable(); },
     }, c.name, el('span', { class: 'type' }, sort === c.name ? (dir > 0 ? '▲' : '▼') : typeName[c.type])))));
-    const tbody = el('tbody', {}, slice.map((r) => el('tr', {}, state.columns.map((c) => el('td', { class: c.type === 'number' ? 'num' : '' }, D.fmtCell(r[c.name], c.type))))));
+    const tbody = el('tbody', {}, slice.map((r) => el('tr', {}, state.columns.map((c) => el('td', { class: c.type === 'number' ? 'num' : '' }, D.fmtCell(r[c.name], c.type, c.percent))))));
     $('#dataTable').replaceChildren(thead, tbody);
     $('#rowCount').textContent = `· ${D.fmtNum(rows.length)} filas`;
 

@@ -175,6 +175,8 @@
     const sample = vals.length > 2000 ? vals.filter((_, i) => i % Math.ceil(vals.length / 2000) === 0) : vals;
     const ratio = (fn) => sample.filter((v) => fn(v) !== null).length / sample.length;
     if (sample.some((v) => v instanceof Date) && ratio(parseDate) >= 0.9) return { type: 'date' };
+    // Claves con ceros a la izquierda ("01", "007") son códigos, no cantidades.
+    if (sample.filter((v) => typeof v === 'string' && /^0\d+$/.test(v.trim())).length >= sample.length * 0.2) return { type: 'text' };
     if (ratio(parseNumber) >= 0.95) {
       // Años sueltos (2019, 2020…) se tratan como categoría.
       const nums = sample.map(parseNumber).filter((n) => n !== null);
@@ -212,6 +214,8 @@
       Object.assign(col, { min, max, sum, unique: new Set(vals).size });
       col.integer = vals.every(Number.isInteger);
       // Identificadores (IDs consecutivos) no son buenas métricas.
+      // Porcentajes guardados como fracción (0.25 = 25%), p. ej. celdas de Excel con formato %.
+      col.percent = /(%|porcentaje|participaci|tasa|proporci|pct)/i.test(col.name) && min >= -1 && max <= 1;
       col.idLike = col.integer && col.unique === vals.length && vals.length > 20 && /(^|\b)(id|folio|no\.?|n[uú]m|c[oó]digo|clave)\b/i.test(col.name);
     } else if (col.type === 'date') {
       let min = Infinity, max = -Infinity;
@@ -302,7 +306,7 @@
       const keepKeys = new Set(byValue.slice(0, limit).map((d) => d.key));
       const rest = out.filter((d) => !keepKeys.has(d.key));
       out = out.filter((d) => keepKeys.has(d.key));
-      if (agg === 'sum' || agg === 'count') {
+      if ((agg === 'sum' || agg === 'count') && !opts.noOther) {
         out.push({ key: '__otros__', label: `Otros (${rest.length})`, raw: null, value: rest.reduce((s, d) => s + (d.value || 0), 0), other: true });
       }
     }
@@ -322,9 +326,11 @@
   function fmtNum(v) { return v === null || v === undefined || Number.isNaN(v) ? '—' : nf.format(v); }
   function fmtCompact(v) { return v === null || v === undefined ? '—' : Math.abs(v) < 10000 ? nf.format(v) : nfCompact.format(v); }
   function fmtDate(d) { return d ? d.toLocaleDateString('es-MX', { year: 'numeric', month: 'short', day: 'numeric' }) : '—'; }
-  function fmtCell(v, type) {
+  const pf = new Intl.NumberFormat('es-MX', { style: 'percent', maximumFractionDigits: 2 });
+  function fmtPct(v) { return v === null || v === undefined || Number.isNaN(v) ? '—' : pf.format(v); }
+  function fmtCell(v, type, percent) {
     if (v === null || v === undefined) return '';
-    if (type === 'number') return fmtNum(v);
+    if (type === 'number') return percent ? fmtPct(v) : fmtNum(v);
     if (type === 'date') {
       const hasTime = v.getHours() || v.getMinutes();
       return hasTime ? v.toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' }) : fmtDate(v);
@@ -332,5 +338,5 @@
     return String(v);
   }
 
-  window.DataKit = { invalidCells, restat, parseNumber, readFile, parseDelimited, aggregate, summarize, autoGrain, fmtNum, fmtCompact, fmtDate, fmtCell, dateKey };
+  window.DataKit = { invalidCells, restat, parseNumber, readFile, parseDelimited, aggregate, summarize, autoGrain, fmtNum, fmtCompact, fmtDate, fmtCell, fmtPct, dateKey };
 })();
