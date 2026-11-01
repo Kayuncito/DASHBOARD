@@ -818,7 +818,7 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
         else if (e instanceof A_.AuthenticationError) out.textContent = 'La clave de API no es válida. Revísala en ⚙ (debe empezar con sk-ant-).';
         else if (e instanceof A_.PermissionDeniedError) out.textContent = 'Tu clave no tiene permiso para usar ese modelo. Prueba otro modelo en ⚙.';
         else if (e instanceof A_.RateLimitError) out.textContent = 'Se alcanzó el límite de uso de tu cuenta de Anthropic por ahora. Intenta en un momento.';
-        else if (e instanceof A_.BadRequestError && /credit|balance|billing/i.test(e.message)) out.textContent = 'Tu cuenta de Anthropic no tiene saldo. Recarga créditos en console.anthropic.com (Billing).';
+        else if (e instanceof A_.BadRequestError && /credit|balance|billing/i.test(e.message)) out.textContent = 'Tu cuenta de Anthropic no tiene saldo. Recarga créditos en platform.claude.com (Billing).';
         else if (e instanceof A_.APIConnectionError) out.textContent = 'No se pudo conectar con Anthropic. Revisa tu internet e intenta de nuevo.';
         else out.textContent = `Error de la API (${e.status || 'sin código'}): ${e.message}`;
         turns.pop();
