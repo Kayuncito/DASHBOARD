@@ -140,7 +140,10 @@
     const sel = $('#sheetSelect');
     sel.replaceChildren(...book.order.map((s) => el('option', { value: s }, s)));
     $('#sheetPicker').hidden = book.order.length < 2;
-    openSheet(book.order[0]);
+    $('#btnBook').hidden = book.order.length < 2;
+    analyzeBook();
+    openSheet(state.bookInfo.recommended || book.order[0]);
+    if (book.order.length > 1) openBookDialog();
   }
 
   $('#sheetSelect').addEventListener('change', (e) => openSheet(e.target.value));
@@ -155,14 +158,16 @@
       t.ignored = new Set();
     }
     state.sheet = name;
+    $('#sheetSelect').value = name;
     state.tbl = t;
     state.columns = t.columns;
     state.rows = t.rows;
     state.filters = {};
     state.table = { page: 0, sort: null, dir: 1, search: '', size: 50 };
     $('#tableSearch').value = '';
-    const dateCol = t.columns.find((c) => c.type === 'date');
+    const dateCol = t.columns.find((c) => c.type === 'date' && c.unique > 1);
     state.dateFilter = dateCol ? { col: dateCol.name, from: null, to: null } : null;
+    state.filters = defaultFilters();
     state.charts = suggestCharts();
     state.bannerClosed = false;
 
@@ -199,6 +204,7 @@
     }
     if (state.dateFilter && !names.has(state.dateFilter.col)) state.dateFilter = null;
     state.charts = state.charts.filter((c) => names.has(c.x) && (!c.y || names.has(c.y)));
+    state.charts.forEach((c) => { if (c.series && !names.has(c.series)) c.series = ''; if (c.ys) c.ys = c.ys.filter((n) => names.has(n)); });
     if (!state.charts.length) state.charts = suggestCharts();
     updateInfo();
     buildFilters();
@@ -210,42 +216,105 @@
 
   const col = (name) => state.columns.find((c) => c.name === name);
   function metrics() {
-    const nums = state.columns.filter((c) => c.type === 'number' && !c.idLike && c.unique > 1);
-    return nums.map((c, i) => [c, metricRank(c), i]).sort((a, b) => a[1] - b[1] || a[2] - b[2]).map(([c]) => c);
+    const nums = state.columns.filter((c) => c.type === 'number' && !c.idLike && !c.ordinalLike && c.unique > 1);
+    // Columnas casi vacías (p. ej. un total que solo viene en algunas filas) van al final.
+    return nums.map((c, i) => [c, metricRank(c) + (c.filled < state.rows.length * 0.6 ? 100 : 0), i]).sort((a, b) => a[1] - b[1] || a[2] - b[2]).map(([c]) => c);
   }
   function categories() {
     return state.columns.filter((c) => c.type === 'text' && c.categorical && c.unique >= 2);
   }
 
+  // ¿Los datos son una serie de tiempo? (una fila por fecha, o fechas de inicio de mes/trimestre).
+  function timeInfo() {
+    const date = state.columns.find((c) => c.type === 'date');
+    if (!date || date.unique < 3) return { date: null, periodic: false, onePer: false };
+    const onePer = date.unique >= date.filled * 0.95 && date.filled >= 3;
+    const periodic = onePer || !!date.monthStart;
+    let grain = D.autoGrain(date);
+    if (date.monthStart) {
+      const months = new Set(state.rows.map((r) => r[date.name]).filter(Boolean).map((d) => d.getMonth()));
+      const quarterly = [...months].every((m) => m % 3 === 0);
+      if (quarterly) grain = 'quarter';
+      else if (date.unique <= 150) grain = 'month';
+    }
+    return { date, periodic, onePer, grain };
+  }
+  // En series de tiempo y tasas no tiene sentido sumar: se promedia.
+  const defaultAgg = (m, t) => (!m ? 'count' : m.percent || (t && t.periodic) ? 'avg' : 'sum');
+
+  // Agrupa columnas de magnitud parecida para poder graficarlas juntas en un mismo eje.
+  function clusterByScale(cols, ratio = 2.5) {
+    const groups = [];
+    cols.forEach((c) => {
+      const mag = Math.max(Math.abs(c.max || 0), Math.abs(c.min || 0)) || 1;
+      const g = groups.find((x) => x.length < 4 && mag / x.mag <= ratio && x.mag / mag <= ratio);
+      if (g) g.push(c); else { const n = [c]; n.mag = mag; groups.push(n); }
+    });
+    return groups;
+  }
+
+  // En formato largo con varias dimensiones (p. ej. Sexo y Tipo_cifra), fija las dimensiones extra
+  // en su valor más común para no promediar cosas distintas (cifras originales con desestacionalizadas).
+  function defaultFilters() {
+    const t = timeInfo();
+    if (!t.periodic || t.onePer) return {};
+    const seriesCols = categories().filter((c) => c.unique >= 2 && c.unique <= 8).sort((a, b) => b.unique - a.unique);
+    const out = {};
+    seriesCols.slice(1).forEach((c) => { out[c.name] = new Set([c.values[0]]); });
+    return out;
+  }
+
   function suggestCharts() {
     const m = metrics();
     const cats = categories();
-    const date = state.columns.find((c) => c.type === 'date');
+    const t = timeInfo();
+    const date = t.date;
     const m1 = m[0];
-    const agg = m1 ? 'sum' : 'count';
-    const y = m1 ? m1.name : null;
     const out = [];
     const add = (c) => out.push({ id: state.nextId++, limit: 10, sort: null, title: '', ...c });
+    const seriesCols = cats.filter((c) => c.unique >= 2 && c.unique <= 8).sort((a, b) => b.unique - a.unique);
 
-    if (date) add({ type: 'area', x: date.name, y, agg, grain: D.autoGrain(date), wide: true });
+    if (t.periodic && m1) {
+      if (t.onePer || !seriesCols.length) {
+        // Serie de tiempo: una gráfica por grupo de columnas comparables.
+        const groups = [...clusterByScale(m.filter((x) => !x.percent)), ...clusterByScale(m.filter((x) => x.percent))];
+        groups.slice(0, 5).forEach((g, i) => add({
+          type: i === 0 && g.length === 1 ? 'area' : 'line', x: date.name, y: g[0].name, ys: g.slice(1).map((c) => c.name),
+          agg: 'avg', grain: t.grain, wide: i === 0,
+          title: g.length > 1 ? `${g.map((c) => c.name).join(', ')} por ${date.name}` : '',
+        }));
+      } else {
+        // Formato largo (Fecha, Categoría, Valor): una línea por categoría.
+        add({ type: 'line', x: date.name, y: m1.name, agg: 'avg', grain: t.grain, series: seriesCols[0].name, wide: true });
+        add({ type: 'bar', x: seriesCols[0].name, y: m1.name, agg: 'avg' });
+        if (m[1]) add({ type: 'line', x: date.name, y: m[1].name, agg: 'avg', grain: t.grain, series: seriesCols[0].name });
+      }
+      return out;
+    }
+
+    const agg = defaultAgg(m1, t);
+    const y = m1 ? m1.name : null;
+    if (date) add({ type: 'area', x: date.name, y, agg, grain: t.grain || D.autoGrain(date), wide: true });
     // Columna de nombres (una fila por elemento: estados, productos, clientes…).
     const label = state.columns.find((c) => c.type === 'text' && !c.categorical && c.unique >= 3 && c.unique <= 500 && c.unique >= c.filled * 0.9 && !(c.values || []).every((v) => /^[\d\W_]+$/.test(v)));
-    if (label && m1) add({ type: 'hbar', x: label.name, y, agg: 'sum', limit: 15, other: false, wide: !date, title: `${y} por ${label.name} (top 15)` });
+    if (label && m1) add({ type: 'hbar', x: label.name, y, agg, limit: 15, other: false, wide: !date, title: `${y} por ${label.name} (top 15)` });
+    const pct = m.find((x) => x.percent && x !== m1);
+    if (label && pct) add({ type: 'hbar', x: label.name, y: pct.name, agg: 'avg', limit: 15, other: false, title: `${pct.name} por ${label.name} (top 15)` });
     const small = [...cats].filter((c) => c.unique <= 6).sort((a, b) => a.unique - b.unique)[0];
     const main = cats.find((c) => c !== small) || null;
     if (main) add({ type: 'bar', x: main.name, y, agg });
-    if (small) add({ type: 'pie', x: small.name, y, agg, limit: 6 });
+    if (small) add({ type: agg === 'sum' || agg === 'count' ? 'pie' : 'bar', x: small.name, y, agg, limit: 6 });
     const restCats = cats.filter((c) => c !== main && c !== small);
     if (restCats[0]) add({ type: 'hbar', x: restCats[0].name, y, agg });
     if (restCats[1] && m[1]) add({ type: 'hbar', x: restCats[1].name, y: m[1].name, agg: 'avg' });
     else if (restCats[1]) add({ type: 'bar', x: restCats[1].name, y, agg });
-    if (m.length >= 2 && !m[1].percent && out.length < 6) add({ type: 'scatter', x: m[0].name, y: m[1].name, agg: 'none' });
+    if (m.length >= 2 && !m[1].percent && !label && out.length < 6) add({ type: 'scatter', x: m[0].name, y: m[1].name, agg: 'none' });
 
     if (!out.length) {
       const first = state.columns.find((c) => c.type === 'text') || state.columns[0];
       if (first) add({ type: 'bar', x: first.name, y: null, agg: 'count' });
     }
-    return out;
+    return out.slice(0, 6);
   }
 
   // ---------- Filtros ----------
@@ -366,11 +435,33 @@
     const tiles = [];
     const total = state.rows.length;
     tiles.push({ label: 'Registros', value: D.fmtNum(rows.length), sub: rows.length === total ? 'Total del archivo' : `de ${D.fmtNum(total)} (${D.fmtNum((rows.length / total) * 100)}%)` });
-    metrics().slice(0, 3).forEach((m) => {
+    const t = timeInfo();
+    const fmtM = (m, v) => (m.percent ? D.fmtPct(v) : D.fmtCompact(v));
+    if (t.onePer) {
+      // Serie de tiempo: último valor y cambio contra el periodo anterior.
+      const dc = t.date.name;
+      const sorted = rows.filter((r) => r[dc]).sort((a, b) => a[dc] - b[dc]);
+      const kpiCols = [...clusterByScale(metrics().filter((x) => !x.percent)), ...clusterByScale(metrics().filter((x) => x.percent))].map((g) => g[0]).slice(0, 4);
+      tiles.length = 0;
+      kpiCols.forEach((m) => {
+        const withVal = sorted.filter((r) => typeof r[m.name] === 'number');
+        const last = withVal[withVal.length - 1], prev = withVal[withVal.length - 2];
+        if (!last) return;
+        let sub = D.dateKey(last[dc], t.grain === 'quarter' ? 'quarter' : 'month').label;
+        if (prev) {
+          const dv = last[m.name] - prev[m.name];
+          const arrow = dv > 0 ? '▲' : dv < 0 ? '▼' : '=';
+          sub += m.percent
+            ? ` · ${arrow} ${D.fmtNum(Math.abs(dv * 100))} pp vs anterior`
+            : prev[m.name] ? ` · ${arrow} ${D.fmtNum(Math.abs((dv / prev[m.name]) * 100))}% vs anterior` : '';
+        }
+        tiles.push({ label: `${m.name} · último`, value: fmtM(m, last[m.name]), title: D.fmtNum(last[m.name]), sub });
+      });
+    } else metrics().slice(0, 3).forEach((m) => {
       const sum = D.summarize(rows, m.name, 'sum');
       const avg = D.summarize(rows, m.name, 'avg');
-      if (m.percent) {
-        tiles.push({ label: `${m.name} · promedio`, value: D.fmtPct(avg), sub: `Mín. ${D.fmtPct(D.summarize(rows, m.name, 'min'))} · Máx. ${D.fmtPct(D.summarize(rows, m.name, 'max'))}` });
+      if (m.percent || t.periodic) {
+        tiles.push({ label: `${m.name} · promedio`, value: fmtM(m, avg), title: D.fmtNum(avg), sub: `Mín. ${fmtM(m, D.summarize(rows, m.name, 'min'))} · Máx. ${fmtM(m, D.summarize(rows, m.name, 'max'))}` });
         return;
       }
       tiles.push({ label: `${m.name} · total`, value: D.fmtCompact(sum), title: D.fmtNum(sum), sub: `Promedio: ${D.fmtNum(avg)}` });
@@ -379,7 +470,9 @@
       const dc = state.dateFilter.col;
       let min = null, max = null;
       rows.forEach((r) => { const v = r[dc]; if (v) { if (!min || v < min) min = v; if (!max || v > max) max = v; } });
-      tiles.push({ label: `Periodo (${dc})`, value: min ? `${Math.round((max - min) / 86400000) + 1} días` : '—', sub: min ? `${D.fmtDate(min)} – ${D.fmtDate(max)}` : 'Sin fechas' });
+      const periods = t.periodic ? new Set(rows.map((r) => r[dc] && D.dateKey(r[dc], t.grain).key).filter(Boolean)).size : 0;
+      const unit = { month: 'meses', quarter: 'trimestres', year: 'años', week: 'semanas', day: 'días' }[t.grain] || 'periodos';
+      tiles.push({ label: `Periodo (${dc})`, value: min ? (t.periodic ? `${periods} ${unit}` : `${Math.round((max - min) / 86400000) + 1} días`) : '—', sub: min ? `${D.fmtDate(min)} – ${D.fmtDate(max)}` : 'Sin fechas' });
     } else {
       const cats = categories();
       if (cats[0]) tiles.push({ label: `${cats[0].name} · únicos`, value: D.fmtNum(D.summarize(rows, cats[0].name, 'distinct')), sub: `de ${D.fmtNum(cats[0].unique)} en total` });
@@ -393,8 +486,10 @@
   function chartTitle(c) {
     if (c.title) return c.title;
     if (c.type === 'scatter') return `${c.y} vs ${c.x}`;
-    if (c.agg === 'count') return `Registros por ${c.x}`;
-    return `${AGG_LABEL[c.agg]} de ${c.y} por ${c.x}`;
+    const by = c.series ? `${c.x} y ${c.series}` : c.x;
+    if (c.agg === 'count') return `Registros por ${by}`;
+    if (c.ys && c.ys.length) return `${[c.y, ...c.ys].join(', ')} por ${c.x}`;
+    return `${AGG_LABEL[c.agg]} de ${c.y} por ${by}`;
   }
 
   function renderCharts() {
@@ -544,21 +639,50 @@
 
     const base = p.series[0];
     const bg = data.map((d) => (d.other ? p.other : selected(d) ? base : alpha(base, 0.25)));
+    // Varias series: desglose por una columna de categorías, o varias columnas numéricas.
+    let sets = [{ label: valueName, values, color: base, bg }];
+    let note = '';
+    const align = (sub, yName) => {
+      const map = new Map(D.aggregate(sub, xc, yName, c.agg, { grain: c.grain }).map((d) => [d.key, d.value]));
+      return data.map((d) => (d.other ? null : map.has(d.key) ? map.get(d.key) : null));
+    };
+    const sc = c.series && c.series !== c.x ? col(c.series) : null;
+    if (sc && sc.values) {
+      const sf = state.filters[sc.name];
+      const vals = sc.values.filter((v) => !sf || sf.has(v));
+      if (vals.length > 8) note = `Se muestran 8 de ${vals.length} series`;
+      sets = vals.slice(0, 8).map((v) => {
+        const color = p.series[sc.values.indexOf(v) % 8];
+        return { label: String(v), values: align(rows.filter((r) => r[sc.name] === v), c.y), color, bg: color };
+      });
+    } else if (c.ys && c.ys.length && c.agg !== 'count') {
+      const names = [c.y, ...c.ys.filter((n) => col(n))].slice(0, 8);
+      sets = names.map((n, i) => ({ label: n, values: i === 0 ? values : align(rows, n), color: p.series[i], bg: i === 0 ? bg.map((x) => (x === base ? p.series[0] : x)) : p.series[i] }));
+    }
+    const multi = sets.length > 1;
+    if (multi) {
+      tooltipCb.callbacks.label = (ctx) => ` ${ctx.dataset.label}: ${fmtV(c.type === 'hbar' ? ctx.parsed.x : ctx.parsed.y)}`;
+    }
+    const legend = multi
+      ? { display: true, position: 'top', align: 'start', labels: { color: p.text, usePointStyle: true, pointStyle: 'circle', boxWidth: 8, padding: 12 } }
+      : { display: false };
+    const subtitle = note ? { display: true, text: note, color: p.muted, align: 'start', font: { size: 11 } } : { display: false };
+
     if (c.type === 'line' || c.type === 'area') {
       return {
         type: 'line',
         data: {
           labels,
-          datasets: [{
-            label: valueName, data: values, borderColor: base, backgroundColor: alpha(base, 0.14), fill: c.type === 'area' ? 'origin' : false,
-            borderWidth: 2, tension: 0.25, pointRadius: data.length > 40 ? 0 : 3, pointHoverRadius: 5, pointBackgroundColor: base, pointBorderColor: p.surface, pointBorderWidth: 2,
-          }],
+          datasets: sets.map((st) => ({
+            label: st.label, data: st.values, borderColor: st.color, backgroundColor: alpha(st.color, multi ? 0.08 : 0.14), fill: c.type === 'area' && !multi ? 'origin' : false,
+            borderWidth: 2, tension: 0.25, pointRadius: data.length > 40 ? 0 : 3, pointHoverRadius: 5, pointBackgroundColor: st.color, pointBorderColor: p.surface, pointBorderWidth: 2, spanGaps: true,
+          })),
         },
         options: {
           responsive: true, maintainAspectRatio: false, animation: { duration: 300 }, onClick, onHover,
           interaction: { mode: 'index', intersect: false },
-          plugins: { legend: { display: false }, tooltip: tooltipCb },
-          scales: { x: { ...axis(), grid: { display: false } }, y: valueAxis() },
+          plugins: { legend, subtitle, tooltip: tooltipCb },
+          scales: { x: { ...axis(), grid: { display: false } }, y: { ...valueAxis(), beginAtZero: !multi && !c.ys } },
         },
       };
     }
@@ -566,12 +690,12 @@
     const horizontal = c.type === 'hbar';
     return {
       type: 'bar',
-      data: { labels, datasets: [{ label: valueName, data: values, backgroundColor: bg, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 44, categoryPercentage: 0.8, barPercentage: 0.9 }] },
+      data: { labels, datasets: sets.map((st) => ({ label: st.label, data: st.values, backgroundColor: st.bg, borderColor: p.surface, borderWidth: multi ? 1 : 0, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 44, categoryPercentage: 0.8, barPercentage: 0.9 })) },
       options: {
         indexAxis: horizontal ? 'y' : 'x',
         responsive: true, maintainAspectRatio: false, animation: { duration: 300 }, onClick, onHover,
-        interaction: { mode: 'nearest', axis: horizontal ? 'y' : 'x', intersect: false },
-        plugins: { legend: { display: false }, tooltip: tooltipCb },
+        interaction: { mode: multi ? 'index' : 'nearest', axis: horizontal ? 'y' : 'x', intersect: false },
+        plugins: { legend, subtitle, tooltip: tooltipCb },
         scales: horizontal
           ? { x: valueAxis(), y: { ...axis(), grid: { display: false }, ticks: { ...axis().ticks, autoSkip: data.length > 25 } } }
           : { x: { ...axis(), grid: { display: false } }, y: valueAxis() },
@@ -648,7 +772,8 @@
     state.editing = chart;
     $('#dialogTitle').textContent = chart ? 'Editar gráfica' : 'Nueva gráfica';
     const m = metrics();
-    const defaults = chart || { type: 'bar', x: (categories()[0] || state.columns[0]).name, y: m[0] ? m[0].name : null, agg: m[0] ? 'sum' : 'count', grain: 'month', limit: 10, sort: '', title: '' };
+    const t = timeInfo();
+    const defaults = chart || { type: t.periodic ? 'line' : 'bar', x: (t.periodic ? t.date : categories()[0] || state.columns[0]).name, y: m[0] ? m[0].name : null, agg: defaultAgg(m[0], t), grain: t.grain || 'month', limit: 10, sort: '', title: '', series: '', ys: [] };
     dlgType = defaults.type;
     $('#fTitle').value = defaults.title || '';
     syncDialog(defaults);
@@ -672,6 +797,19 @@
       $('#fLimit').value = String(init.limit ?? 10);
       $('#fSort').value = init.sort || 'value-desc';
     }
+    // Series: desglose por categoría o comparar varias columnas.
+    const fS = $('#fSeries');
+    const prevS = init ? init.series || '' : fS.value;
+    const sCols = state.columns.filter((c) => c.type === 'text' && c.unique >= 2 && c.unique <= 30 && c.name !== fX.value);
+    fS.replaceChildren(el('option', { value: '' }, 'Ninguno'), ...sCols.map((c) => el('option', { value: c.name }, `${c.name} (${c.unique})`)));
+    fS.value = sCols.some((c) => c.name === prevS) ? prevS : '';
+    const prevYs = init ? init.ys || [] : [...document.querySelectorAll('#fYs input:checked')].map((i) => i.value);
+    const ysBox = $('#fYs');
+    ysBox.replaceChildren(...nums.filter((c) => c.name !== fY.value && !c.idLike).map((c) => el('label', { class: 'check' },
+      el('input', { type: 'checkbox', value: c.name, checked: prevYs.includes(c.name) }), ` ${c.name}`)));
+    const multiOk = ['bar', 'hbar', 'line', 'area'].includes(dlgType) && fAgg.value !== 'count' && fAgg.value !== 'distinct';
+    $('#fSeriesWrap').hidden = !['bar', 'hbar', 'line', 'area'].includes(dlgType);
+    $('#fYsWrap').hidden = !multiOk || !!fS.value || nums.length < 2;
     if (!nums.length) fAgg.value = fAgg.value === 'distinct' ? 'distinct' : 'count';
     [...fAgg.options].forEach((o) => { o.disabled = !nums.length && !['count', 'distinct'].includes(o.value); });
 
@@ -694,7 +832,7 @@
     if (fAgg.value === 'distinct') fillSelect(fY, state.columns, prevY);
   }
 
-  ['#fX', '#fAgg'].forEach((s) => $(s).addEventListener('change', () => syncDialog()));
+  ['#fX', '#fAgg', '#fY', '#fSeries'].forEach((s) => $(s).addEventListener('change', () => syncDialog()));
 
   $('#chartForm').addEventListener('submit', (ev) => {
     if (ev.submitter && ev.submitter.value !== 'save') return;
@@ -709,11 +847,125 @@
       limit: Number($('#fLimit').value),
       sort: $('#fSort').value,
       title: $('#fTitle').value.trim(),
+      series: ['bar', 'hbar', 'line', 'area'].includes(dlgType) ? $('#fSeries').value : '',
+      ys: $('#fYsWrap').hidden ? [] : [...document.querySelectorAll('#fYs input:checked')].map((i) => i.value),
     };
     if (state.editing) Object.assign(state.editing, cfg);
     else state.charts.push({ id: state.nextId++, wide: false, ...cfg });
     renderCharts();
   });
+
+  // ---------- Asistente de hojas ----------
+
+  const B = window.BookKit;
+  const bookDlg = $('#bookDialog');
+  const KIND = { data: 'Datos', notes: 'Notas / instrucciones', calendar: 'Calendario (tabla de apoyo)', empty: 'Vacía' };
+
+  function analyzeBook() {
+    const book = state.book;
+    const kinds = {};
+    book.order.forEach((s) => { kinds[s] = B.classify(s, book.sheets[s]); });
+    const data = book.order.filter((s) => kinds[s].kind === 'data').sort((a, b) => kinds[b].score - kinds[a].score);
+    state.bookInfo = { kinds, recommended: data[0] || book.order.find((s) => book.sheets[s].rows.length) || book.order[0], suggestions: B.suggest(book, kinds) };
+  }
+
+  function addSheet(name, table) {
+    let n = name, k = 2;
+    while (state.book.sheets[n]) n = `${name} (${k++})`;
+    state.book.sheets[n] = table;
+    state.book.order.push(n);
+    $('#sheetSelect').append(el('option', { value: n }, n));
+    analyzeBook();
+    return n;
+  }
+
+  function openBookDialog() { renderBook(); bookDlg.showModal(); }
+  $('#btnBook').addEventListener('click', openBookDialog);
+  $('#btnCloseBook').addEventListener('click', () => bookDlg.close());
+  bookDlg.addEventListener('click', (e) => { if (e.target === bookDlg) bookDlg.close(); });
+
+  function renderBook() {
+    const { kinds, recommended, suggestions } = state.bookInfo;
+    const book = state.book;
+    const count = (k) => book.order.filter((s) => kinds[s].kind === k).length;
+    const parts = [`${count('data')} con datos`];
+    if (count('notes')) parts.push(`${count('notes')} de notas`);
+    if (count('calendar')) parts.push(`${count('calendar')} de calendario`);
+    $('#bookTitle').textContent = `Tu archivo tiene ${book.order.length} hojas`;
+    $('#bookSummary').textContent = `${parts.join(', ')}. Elige cuál ver en el dashboard o combina varias. Te recomiendo empezar con “${recommended}”.`;
+
+    const body = [];
+    // Notas del archivo (p. ej. hoja LEEME): suelen explicar cómo usar los datos.
+    book.order.filter((s) => kinds[s].kind === 'notes').forEach((s) => {
+      body.push(el('details', { class: 'notes clean-section' }, el('summary', {}, `Leer las notas de “${s}”`), el('pre', {}, kinds[s].lines.slice(0, 80).join('\n'))));
+    });
+
+    body.push(el('div', { class: 'sheet-list' }, book.order.map((s) => {
+      const t = book.sheets[s];
+      const k = kinds[s];
+      const isRec = s === recommended;
+      return el('article', { class: `sheet${s === state.sheet ? ' current' : ''}` },
+        el('div', {}, isRec ? el('span', { class: 'tag rec' }, 'Recomendada') : null, el('span', { class: 'tag' }, KIND[k.kind])),
+        el('h3', {}, s),
+        el('div', { class: 'meta' }, `${D.fmtNum(t.rows.length)} filas · ${t.columns.length} columnas${k.kind === 'data' ? ' · ' + B.describeSheet(t) : ''}`),
+        el('div', { class: 'cols' }, t.columns.slice(0, 8).map((c) => c.name).join(', ') + (t.columns.length > 8 ? '…' : '')),
+        k.kind === 'notes' ? null : el('button', { class: `btn sm${isRec ? ' primary' : ''}`, disabled: s === state.sheet, onclick: () => { bookDlg.close(); openSheet(s); } },
+          s === state.sheet ? 'Abierta' : k.kind === 'calendar' ? 'Ver de todos modos' : 'Ver dashboard'));
+    })));
+
+    if (suggestions.length) {
+      body.push(el('div', { class: 'book-section' }, el('h3', {}, 'Combinaciones sugeridas'),
+        suggestions.slice(0, 8).map((sg) => el('div', { class: 'suggestion' }, el('span', {}, sg.text),
+          el('button', { class: 'btn sm', onclick: () => applySuggestion(sg) }, sg.type === 'join' ? 'Unir y ver' : 'Apilar y ver')))));
+    }
+
+    // Unión manual.
+    const usable = book.order.filter((s) => kinds[s].kind !== 'notes' && kinds[s].kind !== 'empty');
+    if (usable.length >= 2) {
+      const selA = el('select', { 'aria-label': 'Hoja base' }, usable.map((s) => el('option', { value: s }, s)));
+      const selB = el('select', { 'aria-label': 'Hoja a unir' }, usable.map((s) => el('option', { value: s }, s)));
+      const selK = el('select', { 'aria-label': 'Columna en común' });
+      const btn = el('button', { class: 'btn primary' }, 'Unir');
+      const hint = el('p', { class: 'hint' });
+      selA.value = state.sheet && usable.includes(state.sheet) ? state.sheet : usable[0];
+      selB.value = usable.find((s) => s !== selA.value);
+      const syncKeys = () => {
+        const common = selA.value === selB.value ? [] : B.commonColumns(book.sheets[selA.value], book.sheets[selB.value]);
+        selK.replaceChildren(...common.map(([a, b]) => el('option', { value: `${a}\u0000${b}` }, a === b ? a : `${a} = ${b}`)));
+        btn.disabled = !common.length;
+        hint.textContent = selA.value === selB.value ? 'Elige dos hojas distintas.' : common.length ? 'Se agregan a la hoja base las columnas de la otra hoja donde coincida la columna elegida (como BUSCARV).' : 'Estas hojas no tienen columnas con el mismo nombre.';
+      };
+      selA.addEventListener('change', syncKeys);
+      selB.addEventListener('change', syncKeys);
+      btn.addEventListener('click', () => {
+        const [ka, kb] = selK.value.split('\u0000');
+        applySuggestion({ type: 'join', a: selA.value, b: selB.value, ka, kb });
+      });
+      syncKeys();
+      body.push(el('div', { class: 'book-section' }, el('h3', {}, 'Unir hojas manualmente'),
+        el('div', { class: 'join-form' },
+          el('label', { class: 'field' }, el('span', {}, 'Hoja base'), selA),
+          el('label', { class: 'field' }, el('span', {}, 'Agregar columnas de'), selB),
+          el('label', { class: 'field' }, el('span', {}, 'Columna en común'), selK),
+          btn), hint));
+    }
+    $('#bookBody').replaceChildren(...body);
+  }
+
+  function applySuggestion(sg) {
+    let name, table;
+    if (sg.type === 'join') {
+      table = B.join(state.book, sg.a, sg.b, sg.ka, sg.kb);
+      name = `${sg.a} + ${sg.b}`;
+    } else {
+      table = B.stack(state.book, sg.sheets);
+      name = `Combinada (${sg.sheets.length} hojas)`;
+    }
+    const n = addSheet(name, table);
+    bookDlg.close();
+    openSheet(n);
+    toast(`Se creó la hoja “${n}”.`);
+  }
 
   // ---------- Limpieza de datos ----------
 
@@ -935,7 +1187,7 @@
 
     const pager = $('#pager');
     pager.replaceChildren(
-      el('span', {}, rows.length ? `${D.fmtNum(cur * size + 1)}–${D.fmtNum(Math.min(rows.length, (cur + 1) * size))} de ${D.fmtNum(rows.length)}` : 'Sin resultados'),
+      el('span', { class: 'page' }, rows.length ? `${D.fmtNum(cur * size + 1)}–${D.fmtNum(Math.min(rows.length, (cur + 1) * size))} de ${D.fmtNum(rows.length)}${pages > 1 ? ` · página ${cur + 1} de ${pages}` : ' · una sola página'}` : 'Sin resultados'),
       el('button', { class: 'btn sm', disabled: cur === 0, onclick: () => { state.table.page = cur - 1; renderTable(); } }, '‹ Anterior'),
       el('button', { class: 'btn sm', disabled: cur >= pages - 1, onclick: () => { state.table.page = cur + 1; renderTable(); } }, 'Siguiente ›'));
   }

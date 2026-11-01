@@ -207,7 +207,8 @@
       col.unique = counts.size;
       col.values = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([v]) => v);
       // Categórica si se repiten valores con suficiente frecuencia.
-      col.categorical = counts.size <= 200 && counts.size <= Math.max(12, vals.length * 0.5);
+      const longText = col.values.slice(0, 50).some((v) => /^https?:\/\//i.test(v)) || col.values.slice(0, 50).reduce((a, v) => a + v.length, 0) / Math.min(50, col.values.length || 1) > 40;
+      col.categorical = !longText && counts.size <= 200 && counts.size <= Math.max(12, vals.length * 0.5);
     } else if (col.type === 'number') {
       let min = Infinity, max = -Infinity, sum = 0;
       vals.forEach((v) => { if (v < min) min = v; if (v > max) max = v; sum += v; });
@@ -215,12 +216,17 @@
       col.integer = vals.every(Number.isInteger);
       // Identificadores (IDs consecutivos) no son buenas métricas.
       // Porcentajes guardados como fracción (0.25 = 25%), p. ej. celdas de Excel con formato %.
-      col.percent = /(%|porcentaje|participaci|tasa|proporci|pct)/i.test(col.name) && min >= -1 && max <= 1;
+      col.percent = /(%|porcentaje|participaci|tasa|proporci|pct|ratio|rate|share|^t[a-z]?_)/i.test(col.name) && min >= -1 && max <= 1 && !col.integer;
+      // Números que son posiciones o partes de fecha (mes 1-12, trimestre 1-4, día), no cantidades.
+      col.ordinalLike = col.integer && max <= 31 && min >= 0 && /(num|n[uú]mero|mes|month|d[ií]a|day|trimestre|quarter|semana|week|bimestre|semestre|orden|rank)/i.test(col.name);
       col.idLike = col.integer && col.unique === vals.length && vals.length > 20 && /(^|\b)(id|folio|no\.?|n[uú]m|c[oó]digo|clave)\b/i.test(col.name);
     } else if (col.type === 'date') {
       let min = Infinity, max = -Infinity;
       vals.forEach((v) => { const t = v.getTime(); if (t < min) min = t; if (t > max) max = t; });
       col.min = new Date(min); col.max = new Date(max);
+      col.unique = new Set(vals.map((v) => v.getTime())).size;
+      // Datos periódicos: todas las fechas son inicio de mes (mensual, trimestral, anual).
+      col.monthStart = vals.length > 0 && vals.every((v) => v.getDate() === 1 && !v.getHours());
     }
   }
 

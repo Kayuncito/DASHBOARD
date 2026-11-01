@@ -205,6 +205,8 @@ select, input[type="text"], input[type="search"], input[type="date"] {
 .card-head h2, .card-head h3 { font-size: 15px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
 .card-actions { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.chart-card .card-head > div:first-child { flex: 1; }
+.chart-card .card-actions { flex-wrap: nowrap; flex-shrink: 0; }
 .icon-btn { border: 0; background: transparent; color: var(--text-muted); border-radius: 6px; padding: 5px; cursor: pointer; display: inline-grid; place-items: center; }
 .icon-btn:hover { color: var(--text-primary); background: var(--surface-2); }
 .chart-box { position: relative; height: 300px; margin-top: 10px; }
@@ -297,6 +299,37 @@ tbody tr:hover td { background: var(--surface-2); }
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 
+/* Botones desactivados */
+.btn:disabled, .btn[disabled] { opacity: .45; cursor: not-allowed; }
+.btn:disabled:hover { background: var(--surface-1); }
+.btn.primary:disabled:hover { background: var(--accent); filter: none; }
+#btnBook { display: inline-flex; align-items: center; gap: 6px; }
+.pager .page { font-variant-numeric: tabular-nums; }
+
+/* Constructor: varias columnas */
+.ys { border: 1px solid var(--border); border-radius: 10px; margin: 14px 0 0; padding: 8px 12px 10px; }
+.ys legend { font-size: 13px; color: var(--text-secondary); padding: 0 4px; }
+.ys-list { display: flex; flex-wrap: wrap; gap: 4px 14px; max-height: 120px; overflow: auto; }
+.check { font-size: 13px; color: var(--text-primary); display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+
+/* Asistente de hojas */
+.sheet-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 10px; margin-top: 14px; }
+.sheet { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; background: var(--surface-1); }
+.sheet.current { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.sheet h3 { font-size: 14px; overflow-wrap: anywhere; }
+.sheet .meta { font-size: 12px; color: var(--text-secondary); }
+.sheet .cols { font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+.sheet .btn { align-self: flex-start; margin-top: auto; }
+.tag { display: inline-block; font-size: 11px; font-weight: 600; border-radius: 999px; padding: 1px 8px; background: var(--surface-2); color: var(--text-secondary); margin-right: 4px; }
+.tag.rec { background: var(--accent); color: var(--accent-ink); }
+.notes { margin-top: 12px; }
+.notes pre { white-space: pre-wrap; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--surface-2); border-radius: 8px; padding: 10px 12px; max-height: 220px; overflow: auto; color: var(--text-secondary); }
+.book-section { margin-top: 18px; }
+.book-section h3 { font-size: 14px; margin-bottom: 8px; }
+.suggestion { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; border: 1px dashed var(--border); border-radius: 10px; padding: 10px 12px; font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; }
+.suggestion span { flex: 1; min-width: 220px; }
+.join-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; align-items: end; }
+
 @media (max-width: 640px) {
   .topbar { padding: 10px 16px; }
   .brand span { display: none; }
@@ -360,6 +393,10 @@ tbody tr:hover td { background: var(--surface-2); }
           <span>Hoja</span>
           <select id="sheetSelect"></select>
         </label>
+        <button id="btnBook" class="btn" hidden title="Ver las hojas del archivo y combinarlas">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zM4 13h7v7H4zm9 0h7v7h-7z"/></svg>
+          Hojas del archivo
+        </button>
         <button id="btnReset" class="btn ghost">Limpiar filtros</button>
         <button id="btnClean" class="btn">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M15 2 9.6 7.4l1.4 1.4L12 7.8V11H5a2 2 0 0 0-2 2v2h18v-2a2 2 0 0 0-2-2h-5V7.8l1 1 1.4-1.4zM4 17l-1 5h18l-1-5z"/></svg>
@@ -416,6 +453,7 @@ tbody tr:hover td { background: var(--surface-2); }
           </select>
         </label>
         <label class="field" id="fYWrap"><span id="fYLabel">Valor (eje Y)</span><select id="fY"></select></label>
+        <label class="field" id="fSeriesWrap"><span>Desglosar por (una línea/barra por valor)</span><select id="fSeries"></select></label>
         <label class="field" id="fLimitWrap"><span>Máx. categorías</span>
           <select id="fLimit">
             <option value="5">5</option>
@@ -433,6 +471,10 @@ tbody tr:hover td { background: var(--surface-2); }
           </select>
         </label>
       </div>
+      <fieldset class="ys" id="fYsWrap">
+        <legend>Comparar con otras columnas (misma gráfica)</legend>
+        <div id="fYs" class="ys-list"></div>
+      </fieldset>
       <p class="hint" id="fHint"></p>
       <div class="dialog-actions">
         <button value="cancel" class="btn ghost" formnovalidate>Cancelar</button>
@@ -454,6 +496,22 @@ tbody tr:hover td { background: var(--surface-2); }
         </button>
       </div>
       <div id="cleanBody"></div>
+    </div>
+  </dialog>
+
+  <!-- Asistente de libros con varias hojas -->
+  <dialog id="bookDialog" class="dialog dialog-lg" aria-labelledby="bookTitle">
+    <div class="dialog-inner">
+      <div class="clean-top">
+        <div>
+          <h2 id="bookTitle">Hojas del archivo</h2>
+          <p class="muted small" id="bookSummary"></p>
+        </div>
+        <button class="icon-btn" id="btnCloseBook" aria-label="Cerrar" title="Cerrar">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>
+        </button>
+      </div>
+      <div id="bookBody"></div>
     </div>
   </dialog>
 
@@ -766,7 +824,8 @@ window.buildSampleCSV = function buildSampleCSV() {
       col.unique = counts.size;
       col.values = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([v]) => v);
       // Categórica si se repiten valores con suficiente frecuencia.
-      col.categorical = counts.size <= 200 && counts.size <= Math.max(12, vals.length * 0.5);
+      const longText = col.values.slice(0, 50).some((v) => /^https?:\/\//i.test(v)) || col.values.slice(0, 50).reduce((a, v) => a + v.length, 0) / Math.min(50, col.values.length || 1) > 40;
+      col.categorical = !longText && counts.size <= 200 && counts.size <= Math.max(12, vals.length * 0.5);
     } else if (col.type === 'number') {
       let min = Infinity, max = -Infinity, sum = 0;
       vals.forEach((v) => { if (v < min) min = v; if (v > max) max = v; sum += v; });
@@ -774,12 +833,17 @@ window.buildSampleCSV = function buildSampleCSV() {
       col.integer = vals.every(Number.isInteger);
       // Identificadores (IDs consecutivos) no son buenas métricas.
       // Porcentajes guardados como fracción (0.25 = 25%), p. ej. celdas de Excel con formato %.
-      col.percent = /(%|porcentaje|participaci|tasa|proporci|pct)/i.test(col.name) && min >= -1 && max <= 1;
+      col.percent = /(%|porcentaje|participaci|tasa|proporci|pct|ratio|rate|share|^t[a-z]?_)/i.test(col.name) && min >= -1 && max <= 1 && !col.integer;
+      // Números que son posiciones o partes de fecha (mes 1-12, trimestre 1-4, día), no cantidades.
+      col.ordinalLike = col.integer && max <= 31 && min >= 0 && /(num|n[uú]mero|mes|month|d[ií]a|day|trimestre|quarter|semana|week|bimestre|semestre|orden|rank)/i.test(col.name);
       col.idLike = col.integer && col.unique === vals.length && vals.length > 20 && /(^|\b)(id|folio|no\.?|n[uú]m|c[oó]digo|clave)\b/i.test(col.name);
     } else if (col.type === 'date') {
       let min = Infinity, max = -Infinity;
       vals.forEach((v) => { const t = v.getTime(); if (t < min) min = t; if (t > max) max = t; });
       col.min = new Date(min); col.max = new Date(max);
+      col.unique = new Set(vals.map((v) => v.getTime())).size;
+      // Datos periódicos: todas las fechas son inicio de mes (mensual, trimestral, anual).
+      col.monthStart = vals.length > 0 && vals.every((v) => v.getDate() === 1 && !v.getHours());
     }
   }
 
@@ -972,7 +1036,8 @@ window.buildSampleCSV = function buildSampleCSV() {
     const textCols = columns.filter((c) => c.type === 'text');
     const totalIdx = [];
     rows.forEach((r, i) => { if (textCols.some((c) => typeof r[c.name] === 'string' && TOTAL_RE.test(r[c.name]))) totalIdx.push(i); });
-    if (totalIdx.length && totalIdx.length < n * 0.2) {
+    // Si "Total" aparece en muchas filas es una categoría legítima (p. ej. Sexo: Total/Mujeres/Hombres), no un renglón de resumen.
+    if (totalIdx.length && totalIdx.length <= Math.max(3, n * 0.05)) {
       const drop = new Set(totalIdx);
       add({
         id: 'totals', severity: 'warn', recommended: true,
@@ -1190,6 +1255,161 @@ window.buildSampleCSV = function buildSampleCSV() {
 
 </script>
   <script>
+// Análisis de libros con varias hojas: qué es cada hoja, cómo se relacionan y cómo combinarlas.
+(function () {
+  'use strict';
+  const D = window.DataKit;
+  const norm = (s) => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[\s_-]+/g, '');
+  const keyOf = (v) => (v instanceof Date ? 'd' + v.getTime() : v === null || v === undefined ? null : typeof v === 'string' ? 's' + norm(v) : 'n' + v);
+
+  // ¿Qué tipo de hoja es? notes = texto/instrucciones, calendar = tabla de fechas de apoyo, data = datos.
+  function classify(name, t) {
+    const cols = t.columns;
+    const n = t.rows.length;
+    if (!cols.length || !n) return { kind: 'empty', score: -1 };
+    const text = cols.filter((c) => c.type === 'text');
+    const nums = cols.filter((c) => c.type === 'number');
+    const dates = cols.filter((c) => c.type === 'date');
+    const avgLen = (() => {
+      let sum = 0, k = 0;
+      t.rows.slice(0, 200).forEach((r) => text.forEach((c) => { const v = r[c.name]; if (typeof v === 'string') { sum += v.length; k++; } }));
+      return k ? sum / k : 0;
+    })();
+    if (!nums.length && !dates.length && (cols.length <= 2 || avgLen >= 30)) {
+      const lines = [cols.map((c) => c.name).join(' · '), ...t.rows.map((r) => cols.map((c) => r[c.name]).filter((v) => v !== null).join(' · '))].filter(Boolean);
+      return { kind: 'notes', score: -1, lines };
+    }
+    const d = dates[0];
+    const metricCols = nums.filter((c) => !c.idLike && !c.ordinalLike);
+    if (d && (/^(dim[_\s-]?)?(fecha|calendario|calendar|dates?|tiempo|time)\b/i.test(name) || (d.unique === n && n >= 300 && metricCols.every((c) => c.integer && c.max <= 9999)))) {
+      if (!metricCols.some((c) => !c.integer)) return { kind: 'calendar', score: 0 };
+    }
+    const cats = text.filter((c) => c.categorical && c.unique >= 2);
+    const score = metricCols.length * 2 + (d ? 3 : 0) + Math.min(cats.length, 3) + Math.min(n, 1000) / 250;
+    return { kind: 'data', score };
+  }
+
+  // Descripción corta del contenido de una hoja.
+  function describeSheet(t) {
+    const parts = [];
+    const d = t.columns.find((c) => c.type === 'date');
+    if (d && d.min) parts.push(`${D.fmtDate(d.min)} – ${D.fmtDate(d.max)}`);
+    const metrics = t.columns.filter((c) => c.type === 'number' && !c.idLike && !c.ordinalLike);
+    const pct = metrics.filter((c) => c.percent).length;
+    if (metrics.length) parts.push(`${metrics.length} columna(s) numérica(s)${pct ? `, ${pct} de porcentaje` : ''}`);
+    const cats = t.columns.filter((c) => c.type === 'text' && c.categorical && c.unique >= 2 && c.unique <= 50);
+    if (cats.length) parts.push(`categorías: ${cats.slice(0, 3).map((c) => `${c.name} (${c.unique})`).join(', ')}`);
+    return parts.join(' · ');
+  }
+
+  // Columnas que dos hojas comparten (mismo nombre y tipo).
+  function commonColumns(a, b) {
+    const out = [];
+    a.columns.forEach((ca) => {
+      const cb = b.columns.find((x) => norm(x.name) === norm(ca.name) && x.type === ca.type);
+      if (cb) out.push([ca.name, cb.name]);
+    });
+    return out;
+  }
+  function isUniqueKey(t, name) {
+    const seen = new Set();
+    for (const r of t.rows) {
+      const k = keyOf(r[name]);
+      if (k === null || seen.has(k)) return false;
+      seen.add(k);
+    }
+    return true;
+  }
+
+  // Sugerencias de combinación entre hojas.
+  function suggest(book, kinds) {
+    const names = book.order.filter((s) => kinds[s].kind === 'data' || kinds[s].kind === 'calendar');
+    const out = [];
+    // Unir (como BUSCARV): B aporta columnas a A usando una columna que en B no se repite.
+    for (const a of names) {
+      if (kinds[a].kind !== 'data') continue;
+      for (const b of names) {
+        if (a === b) continue;
+        const ta = book.sheets[a], tb = book.sheets[b];
+        for (const [ka, kb] of commonColumns(ta, tb)) {
+          if (!isUniqueKey(tb, kb)) continue;
+          const adds = tb.columns.filter((c) => c.name !== kb).map((c) => c.name);
+          if (!adds.length) continue;
+          // Debe haber coincidencias reales.
+          const keys = new Set(tb.rows.map((r) => keyOf(r[kb])));
+          const hits = ta.rows.filter((r) => keys.has(keyOf(r[ka]))).length;
+          if (hits < ta.rows.length * 0.5) continue;
+          out.push({
+            type: 'join', a, b, ka, kb, adds,
+            priority: kinds[b].kind === 'calendar' ? 2 : 1,
+            text: kinds[b].kind === 'calendar'
+              ? `Agregar a “${a}” las columnas de calendario de “${b}” (${adds.slice(0, 4).join(', ')}${adds.length > 4 ? '…' : ''}) usando “${ka}”. Así podrás filtrar y agrupar por año, mes o trimestre.`
+              : `Unir “${a}” con “${b}” usando “${ka}”: agrega ${adds.length} columna(s) (${adds.slice(0, 4).join(', ')}${adds.length > 4 ? '…' : ''}).`,
+          });
+          break;
+        }
+      }
+    }
+    // Apilar: hojas con las mismas columnas (p. ej. una hoja por mes o por sucursal).
+    const groups = new Map();
+    names.filter((s) => kinds[s].kind === 'data').forEach((s) => {
+      const sig = book.sheets[s].columns.map((c) => norm(c.name)).sort().join('|');
+      if (!groups.has(sig)) groups.set(sig, []);
+      groups.get(sig).push(s);
+    });
+    groups.forEach((list) => {
+      if (list.length >= 2) out.push({ type: 'stack', sheets: list, priority: 3, text: `Apilar ${list.length} hojas con las mismas columnas (${list.slice(0, 4).join(', ')}${list.length > 4 ? '…' : ''}) en una sola tabla, con una columna “Hoja” para distinguirlas.` });
+    });
+    return out.sort((x, y) => y.priority - x.priority);
+  }
+
+  // Une B a A (left join). Columnas repetidas reciben el nombre de la hoja.
+  function join(book, a, b, ka, kb) {
+    const ta = book.sheets[a], tb = book.sheets[b];
+    const map = new Map();
+    tb.rows.forEach((r) => { const k = keyOf(r[kb]); if (k !== null && !map.has(k)) map.set(k, r); });
+    const taken = new Set(ta.columns.map((c) => c.name));
+    const addCols = tb.columns.filter((c) => c.name !== kb).map((c) => {
+      const to = taken.has(c.name) ? `${c.name} (${b})` : c.name;
+      taken.add(to);
+      return { from: c.name, col: { ...c, name: to } };
+    });
+    const rows = ta.rows.map((r) => {
+      const m = map.get(keyOf(r[ka]));
+      const o = { ...r };
+      addCols.forEach(({ from, col }) => { o[col.name] = m ? m[from] : null; });
+      return o;
+    });
+    const columns = [...ta.columns.map((c) => ({ ...c })), ...addCols.map((x) => x.col)];
+    D.restat(columns, rows);
+    return { columns, rows, meta: {} };
+  }
+
+  // Apila hojas con columnas compatibles y agrega la columna "Hoja".
+  function stack(book, list) {
+    const columns = [{ name: 'Hoja', type: 'text' }];
+    const seen = new Set(['hoja']);
+    list.forEach((s) => book.sheets[s].columns.forEach((c) => {
+      if (!seen.has(norm(c.name))) { seen.add(norm(c.name)); columns.push({ ...c }); }
+    }));
+    const rows = [];
+    list.forEach((s) => book.sheets[s].rows.forEach((r) => {
+      const o = { Hoja: s };
+      columns.slice(1).forEach((c) => {
+        const k = Object.keys(r).find((x) => norm(x) === norm(c.name));
+        o[c.name] = k ? r[k] : null;
+      });
+      rows.push(o);
+    }));
+    D.restat(columns, rows);
+    return { columns, rows, meta: {} };
+  }
+
+  window.BookKit = { classify, describeSheet, suggest, commonColumns, join, stack };
+})();
+
+</script>
+  <script>
 // Interfaz del dashboard.
 (function () {
   'use strict';
@@ -1332,7 +1552,10 @@ window.buildSampleCSV = function buildSampleCSV() {
     const sel = $('#sheetSelect');
     sel.replaceChildren(...book.order.map((s) => el('option', { value: s }, s)));
     $('#sheetPicker').hidden = book.order.length < 2;
-    openSheet(book.order[0]);
+    $('#btnBook').hidden = book.order.length < 2;
+    analyzeBook();
+    openSheet(state.bookInfo.recommended || book.order[0]);
+    if (book.order.length > 1) openBookDialog();
   }
 
   $('#sheetSelect').addEventListener('change', (e) => openSheet(e.target.value));
@@ -1347,14 +1570,16 @@ window.buildSampleCSV = function buildSampleCSV() {
       t.ignored = new Set();
     }
     state.sheet = name;
+    $('#sheetSelect').value = name;
     state.tbl = t;
     state.columns = t.columns;
     state.rows = t.rows;
     state.filters = {};
     state.table = { page: 0, sort: null, dir: 1, search: '', size: 50 };
     $('#tableSearch').value = '';
-    const dateCol = t.columns.find((c) => c.type === 'date');
+    const dateCol = t.columns.find((c) => c.type === 'date' && c.unique > 1);
     state.dateFilter = dateCol ? { col: dateCol.name, from: null, to: null } : null;
+    state.filters = defaultFilters();
     state.charts = suggestCharts();
     state.bannerClosed = false;
 
@@ -1391,6 +1616,7 @@ window.buildSampleCSV = function buildSampleCSV() {
     }
     if (state.dateFilter && !names.has(state.dateFilter.col)) state.dateFilter = null;
     state.charts = state.charts.filter((c) => names.has(c.x) && (!c.y || names.has(c.y)));
+    state.charts.forEach((c) => { if (c.series && !names.has(c.series)) c.series = ''; if (c.ys) c.ys = c.ys.filter((n) => names.has(n)); });
     if (!state.charts.length) state.charts = suggestCharts();
     updateInfo();
     buildFilters();
@@ -1402,42 +1628,105 @@ window.buildSampleCSV = function buildSampleCSV() {
 
   const col = (name) => state.columns.find((c) => c.name === name);
   function metrics() {
-    const nums = state.columns.filter((c) => c.type === 'number' && !c.idLike && c.unique > 1);
-    return nums.map((c, i) => [c, metricRank(c), i]).sort((a, b) => a[1] - b[1] || a[2] - b[2]).map(([c]) => c);
+    const nums = state.columns.filter((c) => c.type === 'number' && !c.idLike && !c.ordinalLike && c.unique > 1);
+    // Columnas casi vacías (p. ej. un total que solo viene en algunas filas) van al final.
+    return nums.map((c, i) => [c, metricRank(c) + (c.filled < state.rows.length * 0.6 ? 100 : 0), i]).sort((a, b) => a[1] - b[1] || a[2] - b[2]).map(([c]) => c);
   }
   function categories() {
     return state.columns.filter((c) => c.type === 'text' && c.categorical && c.unique >= 2);
   }
 
+  // ¿Los datos son una serie de tiempo? (una fila por fecha, o fechas de inicio de mes/trimestre).
+  function timeInfo() {
+    const date = state.columns.find((c) => c.type === 'date');
+    if (!date || date.unique < 3) return { date: null, periodic: false, onePer: false };
+    const onePer = date.unique >= date.filled * 0.95 && date.filled >= 3;
+    const periodic = onePer || !!date.monthStart;
+    let grain = D.autoGrain(date);
+    if (date.monthStart) {
+      const months = new Set(state.rows.map((r) => r[date.name]).filter(Boolean).map((d) => d.getMonth()));
+      const quarterly = [...months].every((m) => m % 3 === 0);
+      if (quarterly) grain = 'quarter';
+      else if (date.unique <= 150) grain = 'month';
+    }
+    return { date, periodic, onePer, grain };
+  }
+  // En series de tiempo y tasas no tiene sentido sumar: se promedia.
+  const defaultAgg = (m, t) => (!m ? 'count' : m.percent || (t && t.periodic) ? 'avg' : 'sum');
+
+  // Agrupa columnas de magnitud parecida para poder graficarlas juntas en un mismo eje.
+  function clusterByScale(cols, ratio = 2.5) {
+    const groups = [];
+    cols.forEach((c) => {
+      const mag = Math.max(Math.abs(c.max || 0), Math.abs(c.min || 0)) || 1;
+      const g = groups.find((x) => x.length < 4 && mag / x.mag <= ratio && x.mag / mag <= ratio);
+      if (g) g.push(c); else { const n = [c]; n.mag = mag; groups.push(n); }
+    });
+    return groups;
+  }
+
+  // En formato largo con varias dimensiones (p. ej. Sexo y Tipo_cifra), fija las dimensiones extra
+  // en su valor más común para no promediar cosas distintas (cifras originales con desestacionalizadas).
+  function defaultFilters() {
+    const t = timeInfo();
+    if (!t.periodic || t.onePer) return {};
+    const seriesCols = categories().filter((c) => c.unique >= 2 && c.unique <= 8).sort((a, b) => b.unique - a.unique);
+    const out = {};
+    seriesCols.slice(1).forEach((c) => { out[c.name] = new Set([c.values[0]]); });
+    return out;
+  }
+
   function suggestCharts() {
     const m = metrics();
     const cats = categories();
-    const date = state.columns.find((c) => c.type === 'date');
+    const t = timeInfo();
+    const date = t.date;
     const m1 = m[0];
-    const agg = m1 ? 'sum' : 'count';
-    const y = m1 ? m1.name : null;
     const out = [];
     const add = (c) => out.push({ id: state.nextId++, limit: 10, sort: null, title: '', ...c });
+    const seriesCols = cats.filter((c) => c.unique >= 2 && c.unique <= 8).sort((a, b) => b.unique - a.unique);
 
-    if (date) add({ type: 'area', x: date.name, y, agg, grain: D.autoGrain(date), wide: true });
+    if (t.periodic && m1) {
+      if (t.onePer || !seriesCols.length) {
+        // Serie de tiempo: una gráfica por grupo de columnas comparables.
+        const groups = [...clusterByScale(m.filter((x) => !x.percent)), ...clusterByScale(m.filter((x) => x.percent))];
+        groups.slice(0, 5).forEach((g, i) => add({
+          type: i === 0 && g.length === 1 ? 'area' : 'line', x: date.name, y: g[0].name, ys: g.slice(1).map((c) => c.name),
+          agg: 'avg', grain: t.grain, wide: i === 0,
+          title: g.length > 1 ? `${g.map((c) => c.name).join(', ')} por ${date.name}` : '',
+        }));
+      } else {
+        // Formato largo (Fecha, Categoría, Valor): una línea por categoría.
+        add({ type: 'line', x: date.name, y: m1.name, agg: 'avg', grain: t.grain, series: seriesCols[0].name, wide: true });
+        add({ type: 'bar', x: seriesCols[0].name, y: m1.name, agg: 'avg' });
+        if (m[1]) add({ type: 'line', x: date.name, y: m[1].name, agg: 'avg', grain: t.grain, series: seriesCols[0].name });
+      }
+      return out;
+    }
+
+    const agg = defaultAgg(m1, t);
+    const y = m1 ? m1.name : null;
+    if (date) add({ type: 'area', x: date.name, y, agg, grain: t.grain || D.autoGrain(date), wide: true });
     // Columna de nombres (una fila por elemento: estados, productos, clientes…).
     const label = state.columns.find((c) => c.type === 'text' && !c.categorical && c.unique >= 3 && c.unique <= 500 && c.unique >= c.filled * 0.9 && !(c.values || []).every((v) => /^[\d\W_]+$/.test(v)));
-    if (label && m1) add({ type: 'hbar', x: label.name, y, agg: 'sum', limit: 15, other: false, wide: !date, title: `${y} por ${label.name} (top 15)` });
+    if (label && m1) add({ type: 'hbar', x: label.name, y, agg, limit: 15, other: false, wide: !date, title: `${y} por ${label.name} (top 15)` });
+    const pct = m.find((x) => x.percent && x !== m1);
+    if (label && pct) add({ type: 'hbar', x: label.name, y: pct.name, agg: 'avg', limit: 15, other: false, title: `${pct.name} por ${label.name} (top 15)` });
     const small = [...cats].filter((c) => c.unique <= 6).sort((a, b) => a.unique - b.unique)[0];
     const main = cats.find((c) => c !== small) || null;
     if (main) add({ type: 'bar', x: main.name, y, agg });
-    if (small) add({ type: 'pie', x: small.name, y, agg, limit: 6 });
+    if (small) add({ type: agg === 'sum' || agg === 'count' ? 'pie' : 'bar', x: small.name, y, agg, limit: 6 });
     const restCats = cats.filter((c) => c !== main && c !== small);
     if (restCats[0]) add({ type: 'hbar', x: restCats[0].name, y, agg });
     if (restCats[1] && m[1]) add({ type: 'hbar', x: restCats[1].name, y: m[1].name, agg: 'avg' });
     else if (restCats[1]) add({ type: 'bar', x: restCats[1].name, y, agg });
-    if (m.length >= 2 && !m[1].percent && out.length < 6) add({ type: 'scatter', x: m[0].name, y: m[1].name, agg: 'none' });
+    if (m.length >= 2 && !m[1].percent && !label && out.length < 6) add({ type: 'scatter', x: m[0].name, y: m[1].name, agg: 'none' });
 
     if (!out.length) {
       const first = state.columns.find((c) => c.type === 'text') || state.columns[0];
       if (first) add({ type: 'bar', x: first.name, y: null, agg: 'count' });
     }
-    return out;
+    return out.slice(0, 6);
   }
 
   // ---------- Filtros ----------
@@ -1558,11 +1847,33 @@ window.buildSampleCSV = function buildSampleCSV() {
     const tiles = [];
     const total = state.rows.length;
     tiles.push({ label: 'Registros', value: D.fmtNum(rows.length), sub: rows.length === total ? 'Total del archivo' : `de ${D.fmtNum(total)} (${D.fmtNum((rows.length / total) * 100)}%)` });
-    metrics().slice(0, 3).forEach((m) => {
+    const t = timeInfo();
+    const fmtM = (m, v) => (m.percent ? D.fmtPct(v) : D.fmtCompact(v));
+    if (t.onePer) {
+      // Serie de tiempo: último valor y cambio contra el periodo anterior.
+      const dc = t.date.name;
+      const sorted = rows.filter((r) => r[dc]).sort((a, b) => a[dc] - b[dc]);
+      const kpiCols = [...clusterByScale(metrics().filter((x) => !x.percent)), ...clusterByScale(metrics().filter((x) => x.percent))].map((g) => g[0]).slice(0, 4);
+      tiles.length = 0;
+      kpiCols.forEach((m) => {
+        const withVal = sorted.filter((r) => typeof r[m.name] === 'number');
+        const last = withVal[withVal.length - 1], prev = withVal[withVal.length - 2];
+        if (!last) return;
+        let sub = D.dateKey(last[dc], t.grain === 'quarter' ? 'quarter' : 'month').label;
+        if (prev) {
+          const dv = last[m.name] - prev[m.name];
+          const arrow = dv > 0 ? '▲' : dv < 0 ? '▼' : '=';
+          sub += m.percent
+            ? ` · ${arrow} ${D.fmtNum(Math.abs(dv * 100))} pp vs anterior`
+            : prev[m.name] ? ` · ${arrow} ${D.fmtNum(Math.abs((dv / prev[m.name]) * 100))}% vs anterior` : '';
+        }
+        tiles.push({ label: `${m.name} · último`, value: fmtM(m, last[m.name]), title: D.fmtNum(last[m.name]), sub });
+      });
+    } else metrics().slice(0, 3).forEach((m) => {
       const sum = D.summarize(rows, m.name, 'sum');
       const avg = D.summarize(rows, m.name, 'avg');
-      if (m.percent) {
-        tiles.push({ label: `${m.name} · promedio`, value: D.fmtPct(avg), sub: `Mín. ${D.fmtPct(D.summarize(rows, m.name, 'min'))} · Máx. ${D.fmtPct(D.summarize(rows, m.name, 'max'))}` });
+      if (m.percent || t.periodic) {
+        tiles.push({ label: `${m.name} · promedio`, value: fmtM(m, avg), title: D.fmtNum(avg), sub: `Mín. ${fmtM(m, D.summarize(rows, m.name, 'min'))} · Máx. ${fmtM(m, D.summarize(rows, m.name, 'max'))}` });
         return;
       }
       tiles.push({ label: `${m.name} · total`, value: D.fmtCompact(sum), title: D.fmtNum(sum), sub: `Promedio: ${D.fmtNum(avg)}` });
@@ -1571,7 +1882,9 @@ window.buildSampleCSV = function buildSampleCSV() {
       const dc = state.dateFilter.col;
       let min = null, max = null;
       rows.forEach((r) => { const v = r[dc]; if (v) { if (!min || v < min) min = v; if (!max || v > max) max = v; } });
-      tiles.push({ label: `Periodo (${dc})`, value: min ? `${Math.round((max - min) / 86400000) + 1} días` : '—', sub: min ? `${D.fmtDate(min)} – ${D.fmtDate(max)}` : 'Sin fechas' });
+      const periods = t.periodic ? new Set(rows.map((r) => r[dc] && D.dateKey(r[dc], t.grain).key).filter(Boolean)).size : 0;
+      const unit = { month: 'meses', quarter: 'trimestres', year: 'años', week: 'semanas', day: 'días' }[t.grain] || 'periodos';
+      tiles.push({ label: `Periodo (${dc})`, value: min ? (t.periodic ? `${periods} ${unit}` : `${Math.round((max - min) / 86400000) + 1} días`) : '—', sub: min ? `${D.fmtDate(min)} – ${D.fmtDate(max)}` : 'Sin fechas' });
     } else {
       const cats = categories();
       if (cats[0]) tiles.push({ label: `${cats[0].name} · únicos`, value: D.fmtNum(D.summarize(rows, cats[0].name, 'distinct')), sub: `de ${D.fmtNum(cats[0].unique)} en total` });
@@ -1585,8 +1898,10 @@ window.buildSampleCSV = function buildSampleCSV() {
   function chartTitle(c) {
     if (c.title) return c.title;
     if (c.type === 'scatter') return `${c.y} vs ${c.x}`;
-    if (c.agg === 'count') return `Registros por ${c.x}`;
-    return `${AGG_LABEL[c.agg]} de ${c.y} por ${c.x}`;
+    const by = c.series ? `${c.x} y ${c.series}` : c.x;
+    if (c.agg === 'count') return `Registros por ${by}`;
+    if (c.ys && c.ys.length) return `${[c.y, ...c.ys].join(', ')} por ${c.x}`;
+    return `${AGG_LABEL[c.agg]} de ${c.y} por ${by}`;
   }
 
   function renderCharts() {
@@ -1736,21 +2051,50 @@ window.buildSampleCSV = function buildSampleCSV() {
 
     const base = p.series[0];
     const bg = data.map((d) => (d.other ? p.other : selected(d) ? base : alpha(base, 0.25)));
+    // Varias series: desglose por una columna de categorías, o varias columnas numéricas.
+    let sets = [{ label: valueName, values, color: base, bg }];
+    let note = '';
+    const align = (sub, yName) => {
+      const map = new Map(D.aggregate(sub, xc, yName, c.agg, { grain: c.grain }).map((d) => [d.key, d.value]));
+      return data.map((d) => (d.other ? null : map.has(d.key) ? map.get(d.key) : null));
+    };
+    const sc = c.series && c.series !== c.x ? col(c.series) : null;
+    if (sc && sc.values) {
+      const sf = state.filters[sc.name];
+      const vals = sc.values.filter((v) => !sf || sf.has(v));
+      if (vals.length > 8) note = `Se muestran 8 de ${vals.length} series`;
+      sets = vals.slice(0, 8).map((v) => {
+        const color = p.series[sc.values.indexOf(v) % 8];
+        return { label: String(v), values: align(rows.filter((r) => r[sc.name] === v), c.y), color, bg: color };
+      });
+    } else if (c.ys && c.ys.length && c.agg !== 'count') {
+      const names = [c.y, ...c.ys.filter((n) => col(n))].slice(0, 8);
+      sets = names.map((n, i) => ({ label: n, values: i === 0 ? values : align(rows, n), color: p.series[i], bg: i === 0 ? bg.map((x) => (x === base ? p.series[0] : x)) : p.series[i] }));
+    }
+    const multi = sets.length > 1;
+    if (multi) {
+      tooltipCb.callbacks.label = (ctx) => ` ${ctx.dataset.label}: ${fmtV(c.type === 'hbar' ? ctx.parsed.x : ctx.parsed.y)}`;
+    }
+    const legend = multi
+      ? { display: true, position: 'top', align: 'start', labels: { color: p.text, usePointStyle: true, pointStyle: 'circle', boxWidth: 8, padding: 12 } }
+      : { display: false };
+    const subtitle = note ? { display: true, text: note, color: p.muted, align: 'start', font: { size: 11 } } : { display: false };
+
     if (c.type === 'line' || c.type === 'area') {
       return {
         type: 'line',
         data: {
           labels,
-          datasets: [{
-            label: valueName, data: values, borderColor: base, backgroundColor: alpha(base, 0.14), fill: c.type === 'area' ? 'origin' : false,
-            borderWidth: 2, tension: 0.25, pointRadius: data.length > 40 ? 0 : 3, pointHoverRadius: 5, pointBackgroundColor: base, pointBorderColor: p.surface, pointBorderWidth: 2,
-          }],
+          datasets: sets.map((st) => ({
+            label: st.label, data: st.values, borderColor: st.color, backgroundColor: alpha(st.color, multi ? 0.08 : 0.14), fill: c.type === 'area' && !multi ? 'origin' : false,
+            borderWidth: 2, tension: 0.25, pointRadius: data.length > 40 ? 0 : 3, pointHoverRadius: 5, pointBackgroundColor: st.color, pointBorderColor: p.surface, pointBorderWidth: 2, spanGaps: true,
+          })),
         },
         options: {
           responsive: true, maintainAspectRatio: false, animation: { duration: 300 }, onClick, onHover,
           interaction: { mode: 'index', intersect: false },
-          plugins: { legend: { display: false }, tooltip: tooltipCb },
-          scales: { x: { ...axis(), grid: { display: false } }, y: valueAxis() },
+          plugins: { legend, subtitle, tooltip: tooltipCb },
+          scales: { x: { ...axis(), grid: { display: false } }, y: { ...valueAxis(), beginAtZero: !multi && !c.ys } },
         },
       };
     }
@@ -1758,12 +2102,12 @@ window.buildSampleCSV = function buildSampleCSV() {
     const horizontal = c.type === 'hbar';
     return {
       type: 'bar',
-      data: { labels, datasets: [{ label: valueName, data: values, backgroundColor: bg, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 44, categoryPercentage: 0.8, barPercentage: 0.9 }] },
+      data: { labels, datasets: sets.map((st) => ({ label: st.label, data: st.values, backgroundColor: st.bg, borderColor: p.surface, borderWidth: multi ? 1 : 0, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 44, categoryPercentage: 0.8, barPercentage: 0.9 })) },
       options: {
         indexAxis: horizontal ? 'y' : 'x',
         responsive: true, maintainAspectRatio: false, animation: { duration: 300 }, onClick, onHover,
-        interaction: { mode: 'nearest', axis: horizontal ? 'y' : 'x', intersect: false },
-        plugins: { legend: { display: false }, tooltip: tooltipCb },
+        interaction: { mode: multi ? 'index' : 'nearest', axis: horizontal ? 'y' : 'x', intersect: false },
+        plugins: { legend, subtitle, tooltip: tooltipCb },
         scales: horizontal
           ? { x: valueAxis(), y: { ...axis(), grid: { display: false }, ticks: { ...axis().ticks, autoSkip: data.length > 25 } } }
           : { x: { ...axis(), grid: { display: false } }, y: valueAxis() },
@@ -1840,7 +2184,8 @@ window.buildSampleCSV = function buildSampleCSV() {
     state.editing = chart;
     $('#dialogTitle').textContent = chart ? 'Editar gráfica' : 'Nueva gráfica';
     const m = metrics();
-    const defaults = chart || { type: 'bar', x: (categories()[0] || state.columns[0]).name, y: m[0] ? m[0].name : null, agg: m[0] ? 'sum' : 'count', grain: 'month', limit: 10, sort: '', title: '' };
+    const t = timeInfo();
+    const defaults = chart || { type: t.periodic ? 'line' : 'bar', x: (t.periodic ? t.date : categories()[0] || state.columns[0]).name, y: m[0] ? m[0].name : null, agg: defaultAgg(m[0], t), grain: t.grain || 'month', limit: 10, sort: '', title: '', series: '', ys: [] };
     dlgType = defaults.type;
     $('#fTitle').value = defaults.title || '';
     syncDialog(defaults);
@@ -1864,6 +2209,19 @@ window.buildSampleCSV = function buildSampleCSV() {
       $('#fLimit').value = String(init.limit ?? 10);
       $('#fSort').value = init.sort || 'value-desc';
     }
+    // Series: desglose por categoría o comparar varias columnas.
+    const fS = $('#fSeries');
+    const prevS = init ? init.series || '' : fS.value;
+    const sCols = state.columns.filter((c) => c.type === 'text' && c.unique >= 2 && c.unique <= 30 && c.name !== fX.value);
+    fS.replaceChildren(el('option', { value: '' }, 'Ninguno'), ...sCols.map((c) => el('option', { value: c.name }, `${c.name} (${c.unique})`)));
+    fS.value = sCols.some((c) => c.name === prevS) ? prevS : '';
+    const prevYs = init ? init.ys || [] : [...document.querySelectorAll('#fYs input:checked')].map((i) => i.value);
+    const ysBox = $('#fYs');
+    ysBox.replaceChildren(...nums.filter((c) => c.name !== fY.value && !c.idLike).map((c) => el('label', { class: 'check' },
+      el('input', { type: 'checkbox', value: c.name, checked: prevYs.includes(c.name) }), ` ${c.name}`)));
+    const multiOk = ['bar', 'hbar', 'line', 'area'].includes(dlgType) && fAgg.value !== 'count' && fAgg.value !== 'distinct';
+    $('#fSeriesWrap').hidden = !['bar', 'hbar', 'line', 'area'].includes(dlgType);
+    $('#fYsWrap').hidden = !multiOk || !!fS.value || nums.length < 2;
     if (!nums.length) fAgg.value = fAgg.value === 'distinct' ? 'distinct' : 'count';
     [...fAgg.options].forEach((o) => { o.disabled = !nums.length && !['count', 'distinct'].includes(o.value); });
 
@@ -1886,7 +2244,7 @@ window.buildSampleCSV = function buildSampleCSV() {
     if (fAgg.value === 'distinct') fillSelect(fY, state.columns, prevY);
   }
 
-  ['#fX', '#fAgg'].forEach((s) => $(s).addEventListener('change', () => syncDialog()));
+  ['#fX', '#fAgg', '#fY', '#fSeries'].forEach((s) => $(s).addEventListener('change', () => syncDialog()));
 
   $('#chartForm').addEventListener('submit', (ev) => {
     if (ev.submitter && ev.submitter.value !== 'save') return;
@@ -1901,11 +2259,125 @@ window.buildSampleCSV = function buildSampleCSV() {
       limit: Number($('#fLimit').value),
       sort: $('#fSort').value,
       title: $('#fTitle').value.trim(),
+      series: ['bar', 'hbar', 'line', 'area'].includes(dlgType) ? $('#fSeries').value : '',
+      ys: $('#fYsWrap').hidden ? [] : [...document.querySelectorAll('#fYs input:checked')].map((i) => i.value),
     };
     if (state.editing) Object.assign(state.editing, cfg);
     else state.charts.push({ id: state.nextId++, wide: false, ...cfg });
     renderCharts();
   });
+
+  // ---------- Asistente de hojas ----------
+
+  const B = window.BookKit;
+  const bookDlg = $('#bookDialog');
+  const KIND = { data: 'Datos', notes: 'Notas / instrucciones', calendar: 'Calendario (tabla de apoyo)', empty: 'Vacía' };
+
+  function analyzeBook() {
+    const book = state.book;
+    const kinds = {};
+    book.order.forEach((s) => { kinds[s] = B.classify(s, book.sheets[s]); });
+    const data = book.order.filter((s) => kinds[s].kind === 'data').sort((a, b) => kinds[b].score - kinds[a].score);
+    state.bookInfo = { kinds, recommended: data[0] || book.order.find((s) => book.sheets[s].rows.length) || book.order[0], suggestions: B.suggest(book, kinds) };
+  }
+
+  function addSheet(name, table) {
+    let n = name, k = 2;
+    while (state.book.sheets[n]) n = `${name} (${k++})`;
+    state.book.sheets[n] = table;
+    state.book.order.push(n);
+    $('#sheetSelect').append(el('option', { value: n }, n));
+    analyzeBook();
+    return n;
+  }
+
+  function openBookDialog() { renderBook(); bookDlg.showModal(); }
+  $('#btnBook').addEventListener('click', openBookDialog);
+  $('#btnCloseBook').addEventListener('click', () => bookDlg.close());
+  bookDlg.addEventListener('click', (e) => { if (e.target === bookDlg) bookDlg.close(); });
+
+  function renderBook() {
+    const { kinds, recommended, suggestions } = state.bookInfo;
+    const book = state.book;
+    const count = (k) => book.order.filter((s) => kinds[s].kind === k).length;
+    const parts = [`${count('data')} con datos`];
+    if (count('notes')) parts.push(`${count('notes')} de notas`);
+    if (count('calendar')) parts.push(`${count('calendar')} de calendario`);
+    $('#bookTitle').textContent = `Tu archivo tiene ${book.order.length} hojas`;
+    $('#bookSummary').textContent = `${parts.join(', ')}. Elige cuál ver en el dashboard o combina varias. Te recomiendo empezar con “${recommended}”.`;
+
+    const body = [];
+    // Notas del archivo (p. ej. hoja LEEME): suelen explicar cómo usar los datos.
+    book.order.filter((s) => kinds[s].kind === 'notes').forEach((s) => {
+      body.push(el('details', { class: 'notes clean-section' }, el('summary', {}, `Leer las notas de “${s}”`), el('pre', {}, kinds[s].lines.slice(0, 80).join('\n'))));
+    });
+
+    body.push(el('div', { class: 'sheet-list' }, book.order.map((s) => {
+      const t = book.sheets[s];
+      const k = kinds[s];
+      const isRec = s === recommended;
+      return el('article', { class: `sheet${s === state.sheet ? ' current' : ''}` },
+        el('div', {}, isRec ? el('span', { class: 'tag rec' }, 'Recomendada') : null, el('span', { class: 'tag' }, KIND[k.kind])),
+        el('h3', {}, s),
+        el('div', { class: 'meta' }, `${D.fmtNum(t.rows.length)} filas · ${t.columns.length} columnas${k.kind === 'data' ? ' · ' + B.describeSheet(t) : ''}`),
+        el('div', { class: 'cols' }, t.columns.slice(0, 8).map((c) => c.name).join(', ') + (t.columns.length > 8 ? '…' : '')),
+        k.kind === 'notes' ? null : el('button', { class: `btn sm${isRec ? ' primary' : ''}`, disabled: s === state.sheet, onclick: () => { bookDlg.close(); openSheet(s); } },
+          s === state.sheet ? 'Abierta' : k.kind === 'calendar' ? 'Ver de todos modos' : 'Ver dashboard'));
+    })));
+
+    if (suggestions.length) {
+      body.push(el('div', { class: 'book-section' }, el('h3', {}, 'Combinaciones sugeridas'),
+        suggestions.slice(0, 8).map((sg) => el('div', { class: 'suggestion' }, el('span', {}, sg.text),
+          el('button', { class: 'btn sm', onclick: () => applySuggestion(sg) }, sg.type === 'join' ? 'Unir y ver' : 'Apilar y ver')))));
+    }
+
+    // Unión manual.
+    const usable = book.order.filter((s) => kinds[s].kind !== 'notes' && kinds[s].kind !== 'empty');
+    if (usable.length >= 2) {
+      const selA = el('select', { 'aria-label': 'Hoja base' }, usable.map((s) => el('option', { value: s }, s)));
+      const selB = el('select', { 'aria-label': 'Hoja a unir' }, usable.map((s) => el('option', { value: s }, s)));
+      const selK = el('select', { 'aria-label': 'Columna en común' });
+      const btn = el('button', { class: 'btn primary' }, 'Unir');
+      const hint = el('p', { class: 'hint' });
+      selA.value = state.sheet && usable.includes(state.sheet) ? state.sheet : usable[0];
+      selB.value = usable.find((s) => s !== selA.value);
+      const syncKeys = () => {
+        const common = selA.value === selB.value ? [] : B.commonColumns(book.sheets[selA.value], book.sheets[selB.value]);
+        selK.replaceChildren(...common.map(([a, b]) => el('option', { value: `${a}\u0000${b}` }, a === b ? a : `${a} = ${b}`)));
+        btn.disabled = !common.length;
+        hint.textContent = selA.value === selB.value ? 'Elige dos hojas distintas.' : common.length ? 'Se agregan a la hoja base las columnas de la otra hoja donde coincida la columna elegida (como BUSCARV).' : 'Estas hojas no tienen columnas con el mismo nombre.';
+      };
+      selA.addEventListener('change', syncKeys);
+      selB.addEventListener('change', syncKeys);
+      btn.addEventListener('click', () => {
+        const [ka, kb] = selK.value.split('\u0000');
+        applySuggestion({ type: 'join', a: selA.value, b: selB.value, ka, kb });
+      });
+      syncKeys();
+      body.push(el('div', { class: 'book-section' }, el('h3', {}, 'Unir hojas manualmente'),
+        el('div', { class: 'join-form' },
+          el('label', { class: 'field' }, el('span', {}, 'Hoja base'), selA),
+          el('label', { class: 'field' }, el('span', {}, 'Agregar columnas de'), selB),
+          el('label', { class: 'field' }, el('span', {}, 'Columna en común'), selK),
+          btn), hint));
+    }
+    $('#bookBody').replaceChildren(...body);
+  }
+
+  function applySuggestion(sg) {
+    let name, table;
+    if (sg.type === 'join') {
+      table = B.join(state.book, sg.a, sg.b, sg.ka, sg.kb);
+      name = `${sg.a} + ${sg.b}`;
+    } else {
+      table = B.stack(state.book, sg.sheets);
+      name = `Combinada (${sg.sheets.length} hojas)`;
+    }
+    const n = addSheet(name, table);
+    bookDlg.close();
+    openSheet(n);
+    toast(`Se creó la hoja “${n}”.`);
+  }
 
   // ---------- Limpieza de datos ----------
 
@@ -2127,7 +2599,7 @@ window.buildSampleCSV = function buildSampleCSV() {
 
     const pager = $('#pager');
     pager.replaceChildren(
-      el('span', {}, rows.length ? `${D.fmtNum(cur * size + 1)}–${D.fmtNum(Math.min(rows.length, (cur + 1) * size))} de ${D.fmtNum(rows.length)}` : 'Sin resultados'),
+      el('span', { class: 'page' }, rows.length ? `${D.fmtNum(cur * size + 1)}–${D.fmtNum(Math.min(rows.length, (cur + 1) * size))} de ${D.fmtNum(rows.length)}${pages > 1 ? ` · página ${cur + 1} de ${pages}` : ' · una sola página'}` : 'Sin resultados'),
       el('button', { class: 'btn sm', disabled: cur === 0, onclick: () => { state.table.page = cur - 1; renderTable(); } }, '‹ Anterior'),
       el('button', { class: 'btn sm', disabled: cur >= pages - 1, onclick: () => { state.table.page = cur + 1; renderTable(); } }, 'Siguiente ›'));
   }

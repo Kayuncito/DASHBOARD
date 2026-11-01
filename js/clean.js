@@ -68,7 +68,8 @@
     const textCols = columns.filter((c) => c.type === 'text');
     const totalIdx = [];
     rows.forEach((r, i) => { if (textCols.some((c) => typeof r[c.name] === 'string' && TOTAL_RE.test(r[c.name]))) totalIdx.push(i); });
-    if (totalIdx.length && totalIdx.length < n * 0.2) {
+    // Si "Total" aparece en muchas filas es una categoría legítima (p. ej. Sexo: Total/Mujeres/Hombres), no un renglón de resumen.
+    if (totalIdx.length && totalIdx.length <= Math.max(3, n * 0.05)) {
       const drop = new Set(totalIdx);
       add({
         id: 'totals', severity: 'warn', recommended: true,

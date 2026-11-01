@@ -52,6 +52,10 @@
           <span>Hoja</span>
           <select id="sheetSelect"></select>
         </label>
+        <button id="btnBook" class="btn" hidden title="Ver las hojas del archivo y combinarlas">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zM4 13h7v7H4zm9 0h7v7h-7z"/></svg>
+          Hojas del archivo
+        </button>
         <button id="btnReset" class="btn ghost">Limpiar filtros</button>
         <button id="btnClean" class="btn">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M15 2 9.6 7.4l1.4 1.4L12 7.8V11H5a2 2 0 0 0-2 2v2h18v-2a2 2 0 0 0-2-2h-5V7.8l1 1 1.4-1.4zM4 17l-1 5h18l-1-5z"/></svg>
@@ -108,6 +112,7 @@
           </select>
         </label>
         <label class="field" id="fYWrap"><span id="fYLabel">Valor (eje Y)</span><select id="fY"></select></label>
+        <label class="field" id="fSeriesWrap"><span>Desglosar por (una línea/barra por valor)</span><select id="fSeries"></select></label>
         <label class="field" id="fLimitWrap"><span>Máx. categorías</span>
           <select id="fLimit">
             <option value="5">5</option>
@@ -125,6 +130,10 @@
           </select>
         </label>
       </div>
+      <fieldset class="ys" id="fYsWrap">
+        <legend>Comparar con otras columnas (misma gráfica)</legend>
+        <div id="fYs" class="ys-list"></div>
+      </fieldset>
       <p class="hint" id="fHint"></p>
       <div class="dialog-actions">
         <button value="cancel" class="btn ghost" formnovalidate>Cancelar</button>
@@ -149,12 +158,29 @@
     </div>
   </dialog>
 
+  <!-- Asistente de libros con varias hojas -->
+  <dialog id="bookDialog" class="dialog dialog-lg" aria-labelledby="bookTitle">
+    <div class="dialog-inner">
+      <div class="clean-top">
+        <div>
+          <h2 id="bookTitle">Hojas del archivo</h2>
+          <p class="muted small" id="bookSummary"></p>
+        </div>
+        <button class="icon-btn" id="btnCloseBook" aria-label="Cerrar" title="Cerrar">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>
+        </button>
+      </div>
+      <div id="bookBody"></div>
+    </div>
+  </dialog>
+
   <script src="vendor/papaparse.min.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="vendor/chart.umd.min.js"></script>
   <script src="js/sample.js"></script>
   <script src="js/data.js"></script>
   <script src="js/clean.js"></script>
+  <script src="js/book.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
