@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard de Datos</title>
+  <meta name="description" content="Importa archivos CSV, XLSX o TXT y genera dashboards interactivos en tu navegador.">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M3 13h4v8H3zm7-6h4v14h-4zm7-4h4v18h-4z"/></svg>
+      <span>Dashboard de Datos</span>
+    </div>
+    <div class="topbar-actions">
+      <span id="fileInfo" class="file-info" hidden></span>
+      <button id="btnNewFile" class="btn ghost" hidden>Cargar otro archivo</button>
+      <button id="btnTheme" class="btn icon" title="Cambiar tema" aria-label="Cambiar tema">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Pantalla de carga -->
+  <main id="uploadView" class="upload-view">
+    <section class="hero">
+      <h1>Convierte tus datos en un dashboard interactivo</h1>
+      <p>Arrastra un archivo <strong>CSV</strong>, <strong>XLSX</strong> o <strong>TXT</strong>. Todo se procesa en tu navegador: tus datos nunca salen de tu equipo.</p>
+    </section>
+
+    <label id="dropZone" class="drop-zone" tabindex="0">
+      <input id="fileInput" type="file" accept=".csv,.xlsx,.xls,.xlsm,.txt,.tsv" hidden>
+      <svg viewBox="0 0 24 24" width="44" height="44" aria-hidden="true"><path fill="currentColor" d="M19 15v4H5v-4H3v6h18v-6zM11 3v10.2l-3.6-3.6L6 11l6 6 6-6-1.4-1.4-3.6 3.6V3z"/></svg>
+      <span class="dz-title">Arrastra tu archivo aquí</span>
+      <span class="dz-sub">o haz clic para seleccionarlo · .csv · .xlsx · .xls · .txt · .tsv</span>
+    </label>
+
+    <div class="upload-alt">
+      <span>¿No tienes un archivo a la mano?</span>
+      <button id="btnSample" class="btn">Probar con datos de ejemplo</button>
+    </div>
+    <p id="uploadError" class="error" role="alert" hidden></p>
+  </main>
+
+  <!-- Dashboard -->
+  <main id="dashView" class="dash-view" hidden>
+    <section class="toolbar">
+      <div class="filters" id="filters"></div>
+      <div class="toolbar-actions">
+        <label id="sheetPicker" class="field inline" hidden>
+          <span>Hoja</span>
+          <select id="sheetSelect"></select>
+        </label>
+        <button id="btnReset" class="btn ghost">Limpiar filtros</button>
+        <button id="btnClean" class="btn">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M15 2 9.6 7.4l1.4 1.4L12 7.8V11H5a2 2 0 0 0-2 2v2h18v-2a2 2 0 0 0-2-2h-5V7.8l1 1 1.4-1.4zM4 17l-1 5h18l-1-5z"/></svg>
+          Limpieza de datos <span id="cleanBadge" class="badge" hidden></span>
+        </button>
+        <button id="btnAddChart" class="btn primary">+ Agregar gráfica</button>
+      </div>
+    </section>
+    <div id="cleanBanner" class="banner" role="status" hidden></div>
+    <div id="activeFilters" class="chips"></div>
+
+    <section id="kpis" class="kpis" aria-label="Indicadores"></section>
+
+    <section id="charts" class="charts" aria-label="Gráficas"></section>
+
+    <section class="card table-card">
+      <div class="card-head">
+        <h2>Datos <span id="rowCount" class="muted"></span></h2>
+        <div class="card-actions">
+          <input id="tableSearch" type="search" placeholder="Buscar en la tabla…" aria-label="Buscar en la tabla">
+          <button id="btnExport" class="btn ghost">Exportar CSV</button>
+        </div>
+      </div>
+      <div class="table-wrap"><table id="dataTable"></table></div>
+      <div class="pager" id="pager"></div>
+    </section>
+  </main>
+
+  <!-- Constructor de gráficas -->
+  <dialog id="chartDialog" class="dialog">
+    <form method="dialog" id="chartForm">
+      <h2 id="dialogTitle">Nueva gráfica</h2>
+      <div class="type-grid" id="typeGrid" role="radiogroup" aria-label="Tipo de gráfica"></div>
+      <div class="form-grid">
+        <label class="field"><span>Título</span><input id="fTitle" type="text" placeholder="Automático"></label>
+        <label class="field"><span id="fXLabel">Agrupar por (eje X)</span><select id="fX"></select></label>
+        <label class="field" id="fGrainWrap"><span>Agrupar fechas por</span>
+          <select id="fGrain">
+            <option value="day">Día</option>
+            <option value="week">Semana</option>
+            <option value="month" selected>Mes</option>
+            <option value="quarter">Trimestre</option>
+            <option value="year">Año</option>
+          </select>
+        </label>
+        <label class="field" id="fAggWrap"><span>Cálculo</span>
+          <select id="fAgg">
+            <option value="count">Conteo de registros</option>
+            <option value="sum">Suma</option>
+            <option value="avg">Promedio</option>
+            <option value="min">Mínimo</option>
+            <option value="max">Máximo</option>
+            <option value="distinct">Valores únicos</option>
+          </select>
+        </label>
+        <label class="field" id="fYWrap"><span id="fYLabel">Valor (eje Y)</span><select id="fY"></select></label>
+        <label class="field" id="fLimitWrap"><span>Máx. categorías</span>
+          <select id="fLimit">
+            <option value="5">5</option>
+            <option value="10" selected>10</option>
+            <option value="15">15</option>
+            <option value="25">25</option>
+            <option value="0">Todas</option>
+          </select>
+        </label>
+        <label class="field" id="fSortWrap"><span>Orden</span>
+          <select id="fSort">
+            <option value="value-desc">Mayor a menor</option>
+            <option value="value-asc">Menor a mayor</option>
+            <option value="label">Alfabético / cronológico</option>
+          </select>
+        </label>
+      </div>
+      <p class="hint" id="fHint"></p>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn ghost" formnovalidate>Cancelar</button>
+        <button id="btnSaveChart" value="save" class="btn primary">Guardar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Limpieza de datos -->
+  <dialog id="cleanDialog" class="dialog dialog-lg" aria-labelledby="cleanTitle">
+    <div class="dialog-inner">
+      <div class="clean-top">
+        <div>
+          <h2 id="cleanTitle">Limpieza de datos</h2>
+          <p class="muted small">Revisa los problemas detectados y aplica las correcciones que quieras. Puedes deshacer cualquier cambio.</p>
+        </div>
+        <button class="icon-btn" id="btnCloseClean" aria-label="Cerrar" title="Cerrar">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>
+        </button>
+      </div>
+      <div id="cleanBody"></div>
+    </div>
+  </dialog>
+
+  <script src="vendor/papaparse.min.js"></script>
+  <script src="vendor/xlsx.full.min.js"></script>
+  <script src="vendor/chart.umd.min.js"></script>
+  <script src="js/sample.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/clean.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
