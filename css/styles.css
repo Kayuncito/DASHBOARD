@@ -331,6 +331,9 @@ tbody tr:hover td { background: var(--surface-2); }
   box-shadow: 0 4px 14px rgba(0,0,0,.18);
 }
 .fab:hover { filter: brightness(1.08); }
+.fab { bottom: calc(20px + env(safe-area-inset-bottom, 0px)); }
+.agent-btn { display: inline-flex; align-items: center; gap: 6px; border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.sticky-actions { position: sticky; bottom: -20px; background: var(--surface-1); padding: 12px 0 20px; margin-bottom: -20px; margin-top: 12px; border-top: 1px solid var(--border); flex-wrap: wrap; }
 body.agent-open .fab { display: none; }
 .agent {
   position: fixed; top: 0; right: 0; bottom: 0; z-index: 45; width: min(420px, 100vw);

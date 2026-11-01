@@ -883,6 +883,8 @@
   function openBookDialog() { renderBook(); bookDlg.showModal(); }
   $('#btnBook').addEventListener('click', openBookDialog);
   $('#btnCloseBook').addEventListener('click', () => bookDlg.close());
+  $('#btnBookGo').addEventListener('click', () => bookDlg.close());
+  $('#btnBookAgent').addEventListener('click', () => { bookDlg.close(); $('#btnAgent').click(); });
   bookDlg.addEventListener('click', (e) => { if (e.target === bookDlg) bookDlg.close(); });
 
   function renderBook() {
@@ -910,8 +912,8 @@
         el('h3', {}, s),
         el('div', { class: 'meta' }, `${D.fmtNum(t.rows.length)} filas · ${t.columns.length} columnas${k.kind === 'data' ? ' · ' + B.describeSheet(t) : ''}`),
         el('div', { class: 'cols' }, t.columns.slice(0, 8).map((c) => c.name).join(', ') + (t.columns.length > 8 ? '…' : '')),
-        k.kind === 'notes' ? null : el('button', { class: `btn sm${isRec ? ' primary' : ''}`, disabled: s === state.sheet, onclick: () => { bookDlg.close(); openSheet(s); } },
-          s === state.sheet ? 'Abierta' : k.kind === 'calendar' ? 'Ver de todos modos' : 'Ver dashboard'));
+        k.kind === 'notes' ? null : el('button', { class: `btn sm${isRec ? ' primary' : ''}`, onclick: () => { bookDlg.close(); if (s !== state.sheet) openSheet(s); } },
+          s === state.sheet ? 'Abierta · ir al dashboard' : k.kind === 'calendar' ? 'Ver de todos modos' : 'Ver dashboard'));
     })));
 
     if (suggestions.length) {

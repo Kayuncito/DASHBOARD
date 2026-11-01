@@ -431,6 +431,7 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
   }
   function close() { panel.hidden = true; document.body.classList.remove('agent-open'); }
   $('#btnAgent').addEventListener('click', () => (panel.hidden ? open() : close()));
+  $('#btnAgentTop').addEventListener('click', () => (panel.hidden ? open() : close()));
   $('#agentClose').addEventListener('click', close);
 
   function setBusy(ctl) {
