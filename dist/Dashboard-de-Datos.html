@@ -3050,30 +3050,305 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
 - Todos los cambios a los datos se pueden deshacer; menciónalo cuando borres algo.
 - Si algo no se puede hacer con las herramientas, dilo y sugiere cómo hacerlo en la interfaz.`;
 
-  // ---------- Modo básico (sin IA) ----------
+  // ---------- Modo sin IA: intérprete de peticiones en español ----------
+  // Detecta la intención por palabras clave y las columnas/valores que se mencionan.
 
-  function basic(text) {
-    const t = norm(text);
-    const m = (re) => t.match(re);
-    let r;
-    if (/deshac/.test(t)) return ACTIONS.limpieza({ accion: 'deshacer' });
-    if (/restaur/.test(t)) return ACTIONS.limpieza({ accion: 'restaurar' });
-    if (/(quita|borra|limpia|elimina)r? (todos )?(los )?filtros/.test(t)) return ACTIONS.filtrar({ quitar_todos: true });
-    if (/duplicad/.test(t)) {
-      const i = S.report.visible.find((x) => x.id === 'dups');
+  const clean = (s) => norm(s).replace(/[¿?¡!.,;:"“”'()]/g, ' ').replace(/\s+/g, ' ').trim();
+  const has = (t, re) => re.test(t);
+
+  // Columnas mencionadas en el texto, con su posición y qué tan seguro es el acierto.
+  function mentionedCols(t) {
+    const out = [];
+    S.columns.forEach((c) => {
+      const n = clean(c.name);
+      let pos = t.indexOf(n), score = 3;
+      if (pos < 0) {
+        const toks = n.split(' ').filter((w) => w.length >= 3);
+        const hits = toks.filter((w) => new RegExp(`\\b${w}`).test(t));
+        if (toks.length && hits.length === toks.length) { score = 2; pos = t.search(new RegExp(`\\b${toks[0]}`)); }
+        else if (hits.length && hits[0].length >= 4) { score = 1; pos = t.search(new RegExp(`\\b${hits[0]}`)); }
+      }
+      if (pos >= 0) out.push({ c, pos, score, len: n.length });
+    });
+    // Si varias columnas compiten por el mismo texto, gana la de mejor acierto.
+    out.sort((a, b) => b.score - a.score || b.len - a.len);
+    const taken = [];
+    const res = [];
+    out.forEach((m) => {
+      if (m.score < 3 && taken.some(([p, l]) => m.pos >= p && m.pos < p + l)) return;
+      if (m.score === 1 && res.some((r) => r.score >= 2)) {
+        const w = clean(m.c.name).split(' ')[0];
+        if (res.some((r) => clean(r.c.name).includes(w))) return;
+      }
+      taken.push([m.pos, m.len]);
+      res.push(m);
+    });
+    return res.sort((a, b) => a.pos - b.pos);
+  }
+  // Valores de categorías mencionados ("norte", "mujeres", "enoe").
+  function mentionedValues(t, cols) {
+    const out = [];
+    S.columns.filter((c) => c.type === 'text' && c.values && c.unique <= 300).forEach((c) => {
+      c.values.forEach((v) => {
+        const n = clean(v);
+        if (n.length < 2 || /^\d+$/.test(n) && n.length < 3) return;
+        const re = new RegExp(`(^|\\s)${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`);
+        if (re.test(t) && !cols.some((m) => clean(m.c.name) === n)) out.push({ c, v, pos: t.search(re) });
+      });
+    });
+    return out;
+  }
+  const fmtC = (c, v) => (v === null || v === undefined || Number.isNaN(v) ? 'sin dato' : c && c.percent ? D.fmtPct(v) : D.fmtNum(v));
+  function aggFrom(t, metric) {
+    if (has(t, /promedio|media|average/)) return 'avg';
+    if (has(t, /\b(suma|sumar|total|acumulad)/)) return 'sum';
+    if (has(t, /\bmaxim|\bmax\b/)) return 'max';
+    if (has(t, /\bminim|\bmin\b/)) return 'min';
+    if (has(t, /cuant[oa]s? (registros|filas|veces)|conteo|numero de (registros|filas)|cantidad de (registros|filas)/)) return 'count';
+    return metric ? A.defaultAgg(metric, A.timeInfo()) : 'count';
+  }
+  const AGG_TXT = { sum: 'total', avg: 'promedio', max: 'máximo', min: 'mínimo', count: 'número de registros', distinct: 'valores distintos' };
+
+  function splitRequests(text) {
+    // "elimina duplicados y luego haz una gráfica…" -> dos peticiones
+    const verbs = 'haz|has|crea|genera|grafica|filtra|elimina|borra|quita|muestra|muestrame|dime|renombra|cambia|limpia|abre|une|junta|agrega|pon|reemplaza|rellena|deshaz|deshacer|ordena|compara';
+    return text.split(new RegExp(`(?:,|;|\\by\\b|\\bluego\\b|\\bdespues\\b|\\btambien\\b)\\s+(?=(?:luego |despues |tambien )?(?:${verbs})\\b)`, 'i')).map((s) => s.trim()).filter(Boolean);
+  }
+
+  function help() {
+    const m = A.metrics()[0], cat = A.categories()[0], t = A.timeInfo();
+    const ex = ['“limpia los datos”', '“elimina duplicados”', '“deshacer”'];
+    if (m && cat) ex.unshift(`“¿qué ${cat.name} tiene el mayor ${m.name}?”`, `“gráfica de ${m.name} por ${cat.name}”`, `“filtra ${cat.name} = ${cat.values[0]}”`);
+    if (m && t.date) ex.unshift(`“gráfica de línea de ${m.name} por ${t.date.name}”`, `“¿cuál fue el último ${m.name}?”`);
+    if (m) ex.push(`“¿cuál es el promedio de ${m.name}?”`, `“top 5 por ${m.name}”`);
+    return `Puedo ayudarte con preguntas, gráficas, filtros y limpieza. Prueba, por ejemplo: ${ex.slice(0, 8).join(', ')}.`;
+  }
+
+  function describeSheets() {
+    const book = S.book;
+    const info = S.bookInfo || {};
+    const KIND = { data: 'datos', notes: 'notas/instrucciones', calendar: 'calendario de apoyo', empty: 'vacía' };
+    const lines = book.order.map((s) => `• ${s}: ${KIND[(info.kinds && info.kinds[s] && info.kinds[s].kind) || 'data']}, ${D.fmtNum(book.sheets[s].rows.length)} filas${info.kinds && info.kinds[s] && info.kinds[s].kind === 'data' ? ' · ' + window.BookKit.describeSheet(book.sheets[s]) : ''}`);
+    const sug = (info.suggestions || []).slice(0, 3).map((x) => `• ${x.text}`);
+    return `El archivo tiene ${book.order.length} hoja(s):\n${lines.join('\n')}${sug.length ? `\n\nTe sugiero:\n${sug.join('\n')}\n(Dime por ejemplo “une ${info.suggestions[0].a || ''} con ${info.suggestions[0].b || ''}”.)` : ''}`;
+  }
+
+  function interpretOne(text) {
+    const t = clean(text);
+    if (!t) return null;
+    const cols = mentionedCols(t);
+    const vals = mentionedValues(t, cols);
+    const num = cols.filter((m) => m.c.type === 'number').map((m) => m.c);
+    const nonNum = cols.filter((m) => m.c.type !== 'number').map((m) => m.c);
+    const afterPor = t.includes(' por ') ? t.slice(t.indexOf(' por ') + 5) : '';
+    const byCol = afterPor ? (mentionedCols(afterPor)[0] || {}).c : null;
+
+    // --- Ayuda, deshacer, restaurar
+    if (has(t, /^(ayuda|help)$|que (puedes|sabes) hacer|como te uso|que comandos/)) return help();
+    if (has(t, /deshac|deshaz|revierte|regresa(lo)? como estaba|ctrl z/)) return ACTIONS.limpieza({ accion: 'deshacer' });
+    if (has(t, /restaur|datos originales|como estaba(n)? al principio/)) return ACTIONS.limpieza({ accion: 'restaurar' });
+
+    // --- Hojas
+    if (has(t, /\bhojas?\b/) && has(t, /que (contiene|tiene|hay)|cuales|describe|explica|resumen|conviene|sirve/)) return S.book.order.length > 1 ? describeSheets() : `El archivo solo tiene una hoja: “${S.sheet}”.`;
+    if (has(t, /\b(une|unir|junta|juntar|combina|combinar|cruza|buscarv)\b/)) {
+      const names = S.book.order.filter((s) => t.includes(clean(s))).sort((a, b) => t.indexOf(clean(a)) - t.indexOf(clean(b)));
+      if (names.length >= 2) return ACTIONS.hojas({ accion: 'unir', hoja_base: names[0], hoja_extra: names[1] });
+      const sg = (S.bookInfo && S.bookInfo.suggestions || []).find((x) => x.type === 'join' && (!names.length || names.includes(x.a) || names.includes(x.b)));
+      if (sg) return ACTIONS.hojas({ accion: 'unir', hoja_base: sg.a, hoja_extra: sg.b, columna: sg.ka });
+      return 'Dime qué hojas unir, por ejemplo: “une fact_mensual con dim_fecha”.';
+    }
+    if (has(t, /\b(apila|apilar)\b/)) return ACTIONS.hojas({ accion: 'apilar', hojas: S.book.order.filter((s) => t.includes(clean(s))) });
+    const sheetHit = S.book.order.find((s) => t.includes(clean(s)));
+    if (sheetHit && has(t, /\b(abre|abrir|ver|ve a|cambia a|muestra|ir a|usa)\b/)) return ACTIONS.hojas({ accion: 'abrir', hoja: sheetHit });
+
+    // --- Filtros
+    if (has(t, /(quita|borra|limpia|elimina|remueve|sin)\w* (todos )?(los )?filtros|ver todo|mostrar todo|muestra todo/)) return ACTIONS.filtrar({ quitar_todos: true });
+    if (has(t, /(quita|borra|elimina)\w* (el )?filtro/) && nonNum[0]) return ACTIONS.filtrar({ columna: nonNum[0].name, valores: [] });
+
+    // --- Limpieza
+    if (has(t, /duplicad|repetid/)) {
+      const i = S.report && S.report.visible.find((x) => x.id === 'dups');
       return i ? ACTIONS.limpieza({ accion: 'aplicar', problema_id: 'dups', opcion: 0 }) : 'No encontré filas duplicadas.';
     }
-    if (/(limpia|limpieza|corrige|arregla)/.test(t)) return ACTIONS.limpieza({ accion: 'recomendadas' });
-    if ((r = m(/(?:abre|abrir|ver|muestra) (?:la )?hoja (.+)/))) return ACTIONS.hojas({ accion: 'abrir', hoja: r[1] });
-    if ((r = m(/(?:elimina|borra|quita)r? (?:la )?columna (.+)/))) return ACTIONS.editar_datos({ operacion: 'eliminar_columna', columna: r[1] });
-    if ((r = m(/renombra(?:r)? (?:la )?(?:columna )?(.+?) (?:a|como|por) (.+)/))) return ACTIONS.editar_datos({ operacion: 'renombrar_columna', columna: r[1], nuevo_nombre: text.split(/ (?:a|como|por) /i).pop().trim() });
-    if ((r = m(/(?:filtra|filtrar|solo|solamente|muestra solo)(?: por)? (.+?) (?:=|es|igual a|:) (.+)/))) return ACTIONS.filtrar({ columna: r[1], valores: r[2].split(/,| y /).map((s) => s.trim()) });
-    if ((r = m(/grafica(?: de (?:barras|linea|lineas|pastel|dona))? (?:de |del |la |el )?(.+?) por (.+)/))) {
-      const tipo = /linea/.test(t) ? 'line' : /pastel|dona/.test(t) ? 'pie' : 'bar';
-      const y = findCol(r[1], { required: false });
-      return ACTIONS.crear_grafica({ tipo, x: r[2], y: y && y.type === 'number' ? y.name : undefined, calculo: y && y.type === 'number' ? undefined : 'count' });
+    if (has(t, /(rellena|llena|completa)\w* (los )?(vacios|vacias|huecos|celdas vacias|nulos)/) || has(t, /(vacios|vacias) con/)) {
+      const c = num[0] || nonNum[0];
+      if (!c) return 'Dime en qué columna rellenar los vacíos, por ejemplo: “rellena los vacíos de Vendedor con Sin dato”.';
+      const m = text.match(/con\s+(.+)$/i);
+      const v = has(t, /promedio/) ? 'promedio' : m ? m[1].trim() : c.type === 'number' ? '0' : 'Sin dato';
+      return ACTIONS.editar_datos({ operacion: 'rellenar_vacios', columna: c.name, valor: v });
     }
+    if (has(t, /\b(limpia|limpiar|limpieza|corrige|corregir|arregla|arreglar|depura|depurar)\b/)) {
+      const r = ACTIONS.limpieza({ accion: 'recomendadas' });
+      const left = S.report ? S.report.visible.length : 0;
+      return `${r}${left ? `\nQuedan ${left} sugerencia(s) por revisar en “Limpieza de datos” (por ejemplo: ${S.report.visible[0].title}).` : ''}`;
+    }
+
+    // --- Edición de columnas y filas
+    let m;
+    if ((m = text.match(/(?:renombra(?:r)?|cambia(?:r)? el nombre de)\s+(?:la\s+)?(?:columna\s+)?(.+?)\s+(?:a|como|por)\s+(.+)$/i))) {
+      return ACTIONS.editar_datos({ operacion: 'renombrar_columna', columna: m[1].trim(), nuevo_nombre: m[2].trim().replace(/^["“]|["”]$/g, '') });
+    }
+    if (has(t, /(elimina|borra|quita|remueve)\w* (la |las )?columnas?\b/) && cols[0]) {
+      return cols.map((x) => ACTIONS.editar_datos({ operacion: 'eliminar_columna', columna: x.c.name })).join('\n');
+    }
+    if (has(t, /(elimina|borra|quita|remueve)\w* (las )?(filas|registros|renglones)/)) {
+      const c = cols[0] && cols[0].c;
+      if (!c) return 'Dime la condición, por ejemplo: “elimina las filas donde Unidades sea menor a 2”.';
+      let op = '=', val = '';
+      if (has(t, /vaci|sin dato|en blanco/)) op = 'vacio';
+      else {
+        if (has(t, /mayor o igual|al menos/)) op = '>=';
+        else if (has(t, /menor o igual|a lo mas/)) op = '<=';
+        else if (has(t, /mayor|mas de|arriba de|superior/)) op = '>';
+        else if (has(t, /menor|menos de|debajo de|inferior/)) op = '<';
+        else if (has(t, /distint|diferente|no sea/)) op = '!=';
+        else if (has(t, /contenga|contiene/)) op = 'contiene';
+        const v = vals.find((x) => x.c === c);
+        const nm = t.match(/(-?\d+(?:[.,]\d+)?)\s*%?/);
+        val = v ? v.v : nm ? nm[1].replace(',', '.') : (text.match(/(?:sea|es|igual a|contenga|contiene|=)\s+(.+)$/i) || [])[1] || '';
+      }
+      return ACTIONS.editar_datos({ operacion: 'eliminar_filas', columna: c.name, operador: op, valor: String(val).trim() });
+    }
+    if ((m = text.match(/(?:reemplaza(?:r)?|sustituye|cambia(?:r)?)\s+["“]?(.+?)["”]?\s+(?:por|con|a)\s+["“]?(.+?)["”]?(?:\s+en\s+(?:la\s+columna\s+)?(.+))?$/i)) && !has(t, /grafica|nombre/)) {
+      const c = m[3] ? findCol(m[3]) : (vals.find((x) => clean(x.v) === clean(m[1])) || {}).c || nonNum[0];
+      if (!c) return 'Dime en qué columna reemplazar, por ejemplo: “reemplaza norte por Norte en Región”.';
+      return ACTIONS.editar_datos({ operacion: 'reemplazar', columna: c.name, buscar: m[1], reemplazar_con: m[2] });
+    }
+    if (has(t, /mayuscula|minuscula|tipo titulo|primera letra/) && nonNum[0]) {
+      const op = has(t, /tipo titulo|primera letra|nombre propio/) ? 'tipo_titulo' : has(t, /minuscula/) ? 'minusculas' : 'mayusculas';
+      return ACTIONS.editar_datos({ operacion: op, columna: nonNum[0].name });
+    }
+
+    // --- Gráficas
+    if ((m = t.match(/(quita|elimina|borra)\w* (la )?grafica (numero )?(\d+)/))) return ACTIONS.quitar_grafica({ numero: Number(m[4]) });
+    if (has(t, /grafic|chart|visualiza|dibuja|diagrama|plot|evolucion|tendencia|como ha (cambiado|evolucionado)/)) {
+      const tm = A.timeInfo();
+      let tipo = has(t, /linea|tendencia|evolucion|en el tiempo|como ha/) ? 'line' : has(t, /area/) ? 'area' : has(t, /pastel|dona|pie|circular|pay/) ? 'pie'
+        : has(t, /horizontal/) ? 'hbar' : has(t, /dispersion|scatter|relacion entre/) ? 'scatter' : null;
+      let x = byCol || nonNum.find((c) => c.type === 'date') || nonNum[0] || null;
+      const metrics = num.filter((c) => c !== x);
+      if (tipo === 'scatter') {
+        if (num.length < 2) return 'Para una gráfica de dispersión dime dos columnas numéricas, por ejemplo: “dispersión de Precio contra Unidades”.';
+        return ACTIONS.crear_grafica({ tipo, x: num[0].name, y: num[1].name });
+      }
+      if (!x) x = (tipo === 'line' || tipo === 'area' || !A.categories()[0]) && tm.date ? tm.date : A.categories()[0] || tm.date;
+      if (!x) return 'Dime por qué columna agrupar, por ejemplo: “gráfica de Ventas por Región”.';
+      if (!tipo) tipo = x.type === 'date' ? 'line' : 'bar';
+      const series = nonNum.find((c) => c !== x && c.type === 'text' && c.unique <= 30 && (has(t, /desglos|separad|por cada|segun/) || afterPor.includes(clean(c.name))));
+      const y = metrics[0] || null;
+      const calc = y ? aggFrom(t, y) : 'count';
+      return ACTIONS.crear_grafica({ tipo, x: x.name, y: y ? y.name : undefined, calculo: calc, desglosar_por: series ? series.name : undefined, comparar_con: metrics.slice(1, 4).map((c) => c.name) });
+    }
+
+    // --- Filtros por valor ("solo Norte", "filtra Región = Norte", "muestra mujeres")
+    if (vals.length && has(t, /\b(filtra|filtrar|solo|solamente|unicamente|nada mas|muestra|muestrame|ver|deja|enfoca)\b|=/)) {
+      const groups = new Map();
+      vals.forEach((v) => { if (!groups.has(v.c.name)) groups.set(v.c.name, []); groups.get(v.c.name).push(v.v); });
+      return [...groups.entries()].map(([c, vs]) => ACTIONS.filtrar({ columna: c, valores: vs })).join('\n');
+    }
+    if ((m = text.match(/(?:filtra|solo|solamente)(?:\s+por)?\s+(.+?)\s*(?:=|es|igual a|:)\s*(.+)$/i))) {
+      return ACTIONS.filtrar({ columna: m[1], valores: m[2].split(/,|\s+y\s+/).map((s) => s.trim()) });
+    }
+    if (has(t, /\b(desde|entre|del?) (\d{4})\b/) || has(t, /\ben (el )?(ano )?\d{4}\b/)) {
+      const tm = A.timeInfo();
+      const years = (t.match(/\b(19|20)\d{2}\b/g) || []).map(Number);
+      if (tm.date && years.length && has(t, /filtra|solo|muestra|desde|entre|ver/)) {
+        const from = `${Math.min(...years)}-01-01`;
+        const to = has(t, /desde/) && years.length === 1 ? undefined : `${Math.max(...years)}-12-31`;
+        return ACTIONS.filtrar({ columna: tm.date.name, desde: from, hasta: to });
+      }
+    }
+
+    // --- Preguntas sobre los datos
+    const metric = num[0] || null;
+    // Sinónimos comunes para la columna de agrupación ("estado" -> Entidad, "año" -> Anio…).
+    const SYN = { estado: /entidad|estado/, estados: /entidad|estado/, entidad: /entidad|estado/, entidades: /entidad|estado/, pais: /pais|country/, ano: /^(ano|anio|year)/, anos: /^(ano|anio|year)/, mes: /^mes/, meses: /^mes/, genero: /sexo|genero/, sexo: /sexo|genero/, vendedor: /vendedor|asesor|agente/, cliente: /cliente/, producto: /producto|articulo/, region: /region|zona/, sucursal: /sucursal|tienda/ };
+    let synCol = null;
+    Object.entries(SYN).some(([w, re]) => {
+      if (!new RegExp(`\\b${w}\\b`).test(t)) return false;
+      synCol = S.columns.find((c) => c.type !== 'number' && re.test(clean(c.name)) && !/corta|iso|ubicacion|clave/.test(clean(c.name))) || null;
+      return !!synCol;
+    });
+    const labelCol = S.columns.find((c) => c.type === 'text' && c.unique >= 3 && c.unique >= (c.filled || 0) * 0.9 && !(c.values || []).every((v) => /^[\d\W_]+$/.test(v)) && !/corta|iso|ubicacion|clave|url/.test(clean(c.name)));
+    const group = byCol && byCol.type !== 'number' ? byCol : nonNum.find((c) => c.type === 'text') || synCol || (byCol && byCol !== metric ? byCol : null);
+    const minWords = has(t, /\bmenor|\bmas baj|\bminim|\bpeor|\bmenos\b|ultimo lugar/);
+    const maxStrong = has(t, /\bmayor|\bmas alt|\bmaxim|\bmejor|primer lugar|lider|lidera/);
+    const wantsMin = minWords && !maxStrong;
+    const wantsMax = maxStrong || (!wantsMin && has(t, /\bmas\b|\btop\b/));
+    const topN = (t.match(/\btop (\d+)|\blos (\d+) (primeros|mejores|mayores|principales)/) || []).slice(1).find(Boolean);
+    if (has(t, /cuant[oa]s (registros|filas|renglones|datos)|total de (registros|filas)/)) {
+      return `Hay ${D.fmtNum(A.filteredRows().length)} registros${A.filteredRows().length !== S.rows.length ? ` con los filtros actuales (de ${D.fmtNum(S.rows.length)} en total)` : ''}.`;
+    }
+    if ((m = t.match(/cuant[oa]s (.+?) (hay|distint|diferent|existen)/))) {
+      const c = mentionedCols(m[1])[0];
+      if (c) return `Hay ${D.fmtNum(D.summarize(S.rows, c.c.name, 'distinct'))} valores distintos de ${c.c.name}${c.c.values && c.c.unique <= 12 ? `: ${c.c.values.join(', ')}` : ''}.`;
+    }
+    if (has(t, /\bultim[oa]|mas recient|actual/) && metric) {
+      const tm = A.timeInfo();
+      if (tm.date) {
+        const rows = A.filteredRows().filter((r) => r[tm.date.name] && typeof r[metric.name] === 'number').sort((a, b) => a[tm.date.name] - b[tm.date.name]);
+        const last = rows[rows.length - 1];
+        if (last) {
+          const sameDate = rows.filter((r) => r[tm.date.name].getTime() === last[tm.date.name].getTime());
+          const v = sameDate.length > 1 ? D.summarize(sameDate, metric.name, 'avg') : last[metric.name];
+          return `El último ${metric.name} (${D.dateKey(last[tm.date.name], tm.grain === 'quarter' ? 'quarter' : 'month').label}) es ${fmtC(metric, v)}${sameDate.length > 1 ? ' (promedio de ese periodo)' : ''}.`;
+        }
+      }
+    }
+    // "la tasa máxima", "el valor mínimo de X" sin decir por qué agrupar: máximo/mínimo general y cuándo ocurrió.
+    const askWho = has(t, /\b(que|cual|quien)(es)? (?!fue\b|es\b|era\b|ha\b)\w+ (tiene|tuvo|registra|presenta|vende|vendio|tienen)/);
+    if (metric && !group && !topN && (wantsMax || wantsMin) && !askWho && (has(t, /\bmaxim|\bminim/) || A.timeInfo().onePer || !labelCol)) {
+      const calc = wantsMin ? 'min' : 'max';
+      const rows = A.filteredRows().filter((r) => typeof r[metric.name] === 'number');
+      if (!rows.length) return `No hay datos de ${metric.name}.`;
+      const best = rows.reduce((a, r) => ((calc === 'max' ? r[metric.name] > a[metric.name] : r[metric.name] < a[metric.name]) ? r : a));
+      const tm = A.timeInfo();
+      const when = tm.date && best[tm.date.name] ? ` (${D.dateKey(best[tm.date.name], tm.grain === 'quarter' ? 'quarter' : tm.grain === 'month' ? 'month' : 'day').label})` : labelCol && best[labelCol.name] ? ` (${best[labelCol.name]})` : '';
+      return `El ${AGG_TXT[calc]} de ${metric.name} es ${fmtC(metric, best[metric.name])}${when}.`;
+    }
+    if ((wantsMax || wantsMin || topN) && (metric || group)) {
+      const g = group || labelCol || A.categories()[0] || (A.timeInfo().date);
+      const y = metric || A.metrics()[0];
+      if (!g) return 'Dime por qué columna comparar, por ejemplo: “¿qué Región tiene el mayor Ventas?”.';
+      const calc = y ? aggFrom(t, y) : 'count';
+      const res = ACTIONS.consultar({ calculo: calc, valor: y ? y.name : undefined, agrupar_por: g.name, orden: wantsMin && !wantsMax ? 'asc' : 'desc', top: Number(topN) || 5 });
+      if (!res.resultados || !res.resultados.length) return 'No hay datos para responder eso con los filtros actuales.';
+      let list = res.resultados;
+      if (g.type !== 'text') list = [...list].sort((a, b) => (wantsMin && !wantsMax ? 1 : -1) * ((parseFloat(String(a.valor)) || 0) - (parseFloat(String(b.valor)) || 0)));
+      const first = list[0];
+      const label = y ? `${AGG_TXT[calc]} de ${y.name}` : 'número de registros';
+      const fmtV = (v) => (typeof v === 'number' ? fmtC(y, v) : v);
+      const rest = list.slice(1, Number(topN) || 5).map((r) => `${r[g.name]} (${fmtV(r.valor)})`).join(', ');
+      return `${topN ? `Top ${list.length}` : `${wantsMin && !wantsMax ? 'Menor' : 'Mayor'}`} ${label} por ${g.name}: ${first[g.name]} con ${fmtV(first.valor)}.${rest ? `\nLe siguen: ${rest}.` : ''}`;
+    }
+    if (metric && (has(t, /cual|cuanto|cuanta|dime|total|promedio|media|suma|maxim|minim|valor|resumen/) || cols.length === 1)) {
+      const rows = A.filteredRows();
+      const calc = has(t, /promedio|media|suma|total|maxim|minim/) ? aggFrom(t, metric) : null;
+      if (calc && !group) return `El ${AGG_TXT[calc]} de ${metric.name} es ${fmtC(metric, D.summarize(rows, metric.name, calc))} (${D.fmtNum(rows.length)} registros).`;
+      if (group) {
+        const res = ACTIONS.consultar({ calculo: calc || A.defaultAgg(metric, A.timeInfo()), valor: metric.name, agrupar_por: group.name, top: 10 });
+        return `${AGG_TXT[calc || A.defaultAgg(metric, A.timeInfo())]} de ${metric.name} por ${group.name}:\n${res.resultados.map((r) => `• ${r[group.name]}: ${typeof r.valor === 'number' ? fmtC(metric, r.valor) : r.valor}`).join('\n')}`;
+      }
+      return `${metric.name}: total ${fmtC(metric, D.summarize(rows, metric.name, 'sum'))}, promedio ${fmtC(metric, D.summarize(rows, metric.name, 'avg'))}, mínimo ${fmtC(metric, D.summarize(rows, metric.name, 'min'))}, máximo ${fmtC(metric, D.summarize(rows, metric.name, 'max'))} (${D.fmtNum(rows.length)} registros).`;
+    }
+    if (has(t, /resumen|describe|de que (trata|son)|que (hay|contiene|tiene) (el|este)? ?(archivo|dato|tabla)/)) {
+      return `La hoja “${S.sheet}” tiene ${D.fmtNum(S.rows.length)} registros y ${S.columns.length} columnas: ${S.columns.map((c) => c.name).join(', ')}.${S.book.order.length > 1 ? ` El archivo tiene ${S.book.order.length} hojas (pregúntame “¿qué contiene cada hoja?”).` : ''}`;
+    }
+    if (vals.length) return ACTIONS.filtrar({ columna: vals[0].c.name, valores: vals.filter((v) => v.c === vals[0].c).map((v) => v.v) });
     return null;
+  }
+
+  function basic(text) {
+    const parts = splitRequests(text);
+    const answers = [];
+    for (const p of parts) {
+      try {
+        const r = interpretOne(p);
+        answers.push(r === null || r === undefined ? null : typeof r === 'string' ? r : JSON.stringify(r));
+      } catch (e) { answers.push(`No se pudo “${p}”: ${e.message}`); }
+    }
+    if (answers.every((a) => a === null)) return `No entendí esa petición. ${help()}`;
+    return answers.map((a, i) => a || `No entendí “${parts[i]}”.`).join('\n\n');
   }
 
   // ---------- Interfaz ----------
@@ -3093,7 +3368,7 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
   let welcome = null;
   function welcomeText() {
     if (mode === 'checking') return 'Conectando con Claude… Puedes escribir tu petición mientras tanto.';
-    if (mode === 'basic') return `Estoy en modo básico, sin IA. ${basicReason} Entiendo comandos como “elimina duplicados”, “limpia los datos”, “filtra Región = Norte”, “gráfica de Ventas por Región”, “elimina columna X”, “renombra X a Y”, “abre hoja X” o “deshacer”.`;
+    if (mode === 'basic') return `Hola. Funciono sin IA (${basicReason.replace(/\.$/, '')}), pero entiendo las peticiones más comunes escritas con tus palabras. ${help()}`;
     return 'Hola. Dime qué quieres hacer con tus datos: limpiarlos, preguntarme algo, filtrar, crear gráficas o combinar hojas. Puedes escribir o dictar.';
   }
   function setMode(m, reason) {
@@ -3174,8 +3449,7 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
     if (mode === 'checking') await ready;
     if (mode === 'basic') {
       try {
-        const out = basic(text);
-        bubble('assistant', out || 'No entendí ese comando en modo básico. Prueba con: “elimina duplicados”, “limpia los datos”, “filtra Región = Norte”, “gráfica de Ventas por Región” o “deshacer”.');
+        bubble('assistant', basic(text));
       } catch (e) { bubble('assistant', `No se pudo: ${e.message}`); }
       suggestions();
       return;
