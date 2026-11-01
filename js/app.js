@@ -174,6 +174,7 @@
     $('#uploadView').hidden = true;
     $('#dashView').hidden = false;
     $('#btnNewFile').hidden = false;
+    $('#btnAgent').hidden = false;
     updateInfo();
     buildFilters();
     analyzeData();
@@ -1199,4 +1200,11 @@
   });
 
   $('#btnExport').addEventListener('click', () => exportCSV(tableRows(), '_filtrado'));
+
+  // Funciones que usa el asistente (js/agent.js).
+  window.DashApp = {
+    state, col, metrics, categories, timeInfo, defaultAgg, chartTitle, filteredRows, toast,
+    openSheet, setData, commit, applyRecommended, runAction, undo, refresh, renderCharts, analyzeData, applySuggestion,
+    restoreOriginal, syncFilters: () => { buildFilters(); refresh(); },
+  };
 })();
