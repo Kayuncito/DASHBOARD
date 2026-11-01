@@ -99,9 +99,26 @@
         <h2>Asistente</h2>
         <span id="agentMode" class="tag">Modo básico</span>
       </div>
+      <div class="agent-head-btns">
+      <button id="agentSettingsBtn" class="icon-btn" aria-label="Configurar IA" title="Configurar IA (clave de API)">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.6 7.6 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.6 7.6 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.5 7.5 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.6 7.6 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.6 7.6 0 0 0 1.7-1l2.5 1 2-3.5zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/></svg>
+      </button>
       <button id="agentClose" class="icon-btn" aria-label="Cerrar asistente" title="Cerrar">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>
       </button>
+      </div>
+    </div>
+    <div id="agentSettings" class="agent-settings" hidden>
+      <h3>IA con tu clave de Claude</h3>
+      <p class="small muted">Crea una clave en <b>console.anthropic.com</b> → API Keys (necesitas saldo en Billing). Se guarda solo en este navegador y solo se envía a Anthropic. A la IA se le envía la lista de columnas, unas filas de ejemplo y los resultados de cada consulta, no el archivo completo.</p>
+      <label class="field"><span>Clave de API</span><input id="agentKey" type="password" autocomplete="off" placeholder="sk-ant-…" spellcheck="false"></label>
+      <label class="field"><span>Modelo</span><select id="agentModel"></select></label>
+      <label class="check"><input id="agentRemember" type="checkbox" checked> Recordar la clave en este navegador</label>
+      <p id="agentKeyStatus" class="small muted"></p>
+      <div class="agent-btns">
+        <button id="agentForget" class="btn ghost" type="button" hidden>Borrar clave</button>
+        <button id="agentSaveKey" class="btn primary" type="button">Guardar y usar IA</button>
+      </div>
     </div>
     <div id="agentLog" class="agent-log" aria-live="polite"></div>
     <div id="agentChips" class="agent-chips"></div>
@@ -214,6 +231,7 @@
   <script src="vendor/papaparse.min.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="vendor/chart.umd.min.js"></script>
+  <script src="vendor/anthropic-sdk.min.js"></script>
   <script src="js/sample.js"></script>
   <script src="js/data.js"></script>
   <script src="js/clean.js"></script>

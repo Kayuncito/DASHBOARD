@@ -655,18 +655,32 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
   const inClaude = !!(window.claude && typeof window.claude.use === 'function');
   let mode = inClaude ? 'checking' : 'basic';
   let basicReason = inClaude ? '' : 'Abriste la página fuera de Claude (GitHub Pages o archivo descargado), donde no hay IA disponible.';
-  const MODE_LABEL = { checking: 'Conectando con Claude…', tools: 'Con IA (Claude)', plan: 'Con IA (Claude)', basic: 'Sin IA · modo básico' };
+  const MODE_LABEL = { checking: 'Conectando con Claude…', tools: 'Con IA (Claude)', plan: 'Con IA (Claude)', basic: 'Sin IA · modo básico', apikey: 'Con IA (tu clave)' };
+  // Modelos disponibles con clave propia (precio aproximado por petición del asistente).
+  const MODELS = [
+    { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', note: 'el más capaz · ~$0.06 USD por petición', fallback: true },
+    { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', note: 'muy bueno · ~$0.03 USD por petición', fallback: true },
+    { id: 'claude-haiku-5-5', name: 'Claude Haiku 5.5', note: 'rápido y económico · ~$0.002 USD por petición', fallback: false },
+  ];
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } },
+    del(k) { try { localStorage.removeItem(k); } catch { /* sin almacenamiento */ } },
+  };
+  // La clave vive solo en este navegador (o solo en esta sesión si no se marca "recordar").
+  const keyCfg = { key: store.get('dash-api-key') || '', model: store.get('dash-api-model') || MODELS[0].id };
   let welcome = null;
   function welcomeText() {
     if (mode === 'checking') return 'Conectando con Claude… Puedes escribir tu petición mientras tanto.';
-    if (mode === 'basic') return `Hola. Funciono sin IA (${basicReason.replace(/\.$/, '')}), pero entiendo las peticiones más comunes escritas con tus palabras. ${help()}`;
+    if (mode === 'basic') return `Hola. Funciono sin IA (${basicReason.replace(/\.$/, '')}), pero entiendo las peticiones más comunes escritas con tus palabras. ${help()}\n\nPara usar IA aquí, toca ⚙ y pega tu clave de la API de Claude.`;
     return 'Hola. Dime qué quieres hacer con tus datos: limpiarlos, preguntarme algo, filtrar, crear gráficas o combinar hojas. Puedes escribir o dictar.';
   }
   function setMode(m, reason) {
     mode = m;
     if (reason) basicReason = reason;
-    $('#agentMode').textContent = MODE_LABEL[m];
-    $('#agentMode').classList.toggle('rec', m === 'tools' || m === 'plan');
+    const mdl = MODELS.find((x) => x.id === keyCfg.model);
+    $('#agentMode').textContent = m === 'apikey' ? `Con IA · ${mdl ? mdl.name.replace('Claude ', '') : keyCfg.model}` : MODE_LABEL[m];
+    $('#agentMode').classList.toggle('rec', m === 'tools' || m === 'plan' || m === 'apikey');
     if (welcome && log.firstChild === welcome && log.childElementCount === 1) welcome.textContent = welcomeText();
   }
   const turns = [];
@@ -765,7 +779,9 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
     const withState = (extra) => `${INSTRUCTIONS}\n\n=== ESTADO ACTUAL DEL DASHBOARD ===\n${context()}\n=== FIN DEL ESTADO ===\n\n${extra}`;
     try {
       let answer;
-      if (mode === 'tools') {
+      if (mode === 'apikey') {
+        answer = await runWithKey(history, ctl, out, run);
+      } else if (mode === 'tools') {
         const msgs = history.map((t, i) => (i === history.length - 1 ? { role: 'user', content: withState(`Petición del usuario: ${t.content}`) } : t));
         const tools = TOOLS.map((tool) => ({ ...tool, execute: (args, cx) => { if (cx && cx.signal && cx.signal.aborted) throw new Error('Cancelado'); return run(tool.name, args); } }));
         ({ text: answer } = await sample(msgs, { tools, modelTier: tier, signal: ctl.signal, onText }));
@@ -796,6 +812,19 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
     } catch (e) {
       out.classList.remove('pending');
       const code = e && e.code;
+      const A_ = window.Anthropic;
+      if (mode === 'apikey' && A_ && e instanceof A_.APIError) {
+        if (e instanceof A_.APIUserAbortError) out.textContent = '(detenido)';
+        else if (e instanceof A_.AuthenticationError) out.textContent = 'La clave de API no es válida. Revísala en ⚙ (debe empezar con sk-ant-).';
+        else if (e instanceof A_.PermissionDeniedError) out.textContent = 'Tu clave no tiene permiso para usar ese modelo. Prueba otro modelo en ⚙.';
+        else if (e instanceof A_.RateLimitError) out.textContent = 'Se alcanzó el límite de uso de tu cuenta de Anthropic por ahora. Intenta en un momento.';
+        else if (e instanceof A_.BadRequestError && /credit|balance|billing/i.test(e.message)) out.textContent = 'Tu cuenta de Anthropic no tiene saldo. Recarga créditos en console.anthropic.com (Billing).';
+        else if (e instanceof A_.APIConnectionError) out.textContent = 'No se pudo conectar con Anthropic. Revisa tu internet e intenta de nuevo.';
+        else out.textContent = `Error de la API (${e.status || 'sin código'}): ${e.message}`;
+        turns.pop();
+        return;
+      }
+      if (code === 'refused_key') { out.textContent = 'Claude no puede ayudar con esa petición. Intenta pedirlo de otra forma.'; turns.pop(); return; }
       if (code === 'cancelled') out.textContent = (e.text || '') + ' (detenido)';
       else if (code === 'tools_unavailable') {
         setMode('plan');
@@ -817,6 +846,88 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
   }
   sendBtn.addEventListener('click', send);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+
+  // ---------- IA con clave propia (API de Claude desde el navegador) ----------
+
+  async function runWithKey(history, ctl, out, run) {
+    const Anthropic = window.Anthropic;
+    if (!Anthropic) throw new Error('No se cargó la librería de Anthropic.');
+    const client = new Anthropic({ apiKey: keyCfg.key, dangerouslyAllowBrowser: true, maxRetries: 1 });
+    const model = MODELS.find((x) => x.id === keyCfg.model) || MODELS[0];
+    const tools = TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema || { type: 'object', properties: {} } }));
+    const last = history[history.length - 1];
+    const messages = [
+      ...history.slice(0, -1),
+      { role: 'user', content: `=== ESTADO ACTUAL DEL DASHBOARD ===\n${context()}\n=== FIN DEL ESTADO ===\n\nPetición del usuario: ${last.content}` },
+    ];
+    const texts = [];
+    for (let round = 0; round < 8; round++) {
+      const params = {
+        model: model.id,
+        max_tokens: 16000,
+        // Instrucciones fijas en caché: las peticiones siguientes las cobran mucho más barato.
+        system: [{ type: 'text', text: INSTRUCTIONS, cache_control: { type: 'ephemeral' } }],
+        tools,
+        messages,
+        output_config: { effort: 'medium' },
+      };
+      // Si el modelo declina por sus filtros de seguridad, el servidor reintenta con el modelo recomendado.
+      const resp = model.fallback
+        ? await client.beta.messages.create({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' }, { signal: ctl.signal })
+        : await client.messages.create(params, { signal: ctl.signal });
+      if (resp.stop_reason === 'refusal') { const err = new Error('refused'); err.code = 'refused_key'; throw err; }
+      const said = resp.content.filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
+      if (said) { texts.push(said); out.classList.remove('pending'); out.textContent = texts.join('\n\n'); }
+      messages.push({ role: 'assistant', content: resp.content });
+      if (resp.stop_reason === 'pause_turn') continue;
+      if (resp.stop_reason !== 'tool_use') break;
+      const results = [];
+      for (const b of resp.content.filter((x) => x.type === 'tool_use')) {
+        try {
+          const r = run(b.name, b.input);
+          results.push({ type: 'tool_result', tool_use_id: b.id, content: typeof r === 'string' ? r : JSON.stringify(r) });
+        } catch (err) {
+          results.push({ type: 'tool_result', tool_use_id: b.id, content: `Error: ${err.message}`, is_error: true });
+        }
+      }
+      messages.push({ role: 'user', content: results });
+    }
+    return texts.length ? texts[texts.length - 1] : 'Listo.';
+  }
+
+  const setBox = $('#agentSettings');
+  const keyInput = $('#agentKey');
+  const modelSel = $('#agentModel');
+  modelSel.replaceChildren(...MODELS.map((m) => { const o = document.createElement('option'); o.value = m.id; o.textContent = `${m.name} — ${m.note}`; return o; }));
+  function syncSettings() {
+    modelSel.value = keyCfg.model;
+    keyInput.value = keyCfg.key ? '••••••••' + keyCfg.key.slice(-4) : '';
+    $('#agentKeyStatus').textContent = keyCfg.key ? `Clave guardada (termina en ${keyCfg.key.slice(-4)}).` : 'Sin clave: el asistente usa ' + (inClaude ? 'la IA de Claude o el modo básico.' : 'el modo básico.');
+    $('#agentForget').hidden = !keyCfg.key;
+  }
+  $('#agentSettingsBtn').addEventListener('click', () => { setBox.hidden = !setBox.hidden; syncSettings(); });
+  keyInput.addEventListener('focus', () => { if (keyInput.value.startsWith('••')) keyInput.value = ''; });
+  $('#agentSaveKey').addEventListener('click', () => {
+    const v = keyInput.value.trim();
+    if (v && !v.startsWith('••')) {
+      if (!/^sk-ant-/.test(v)) { $('#agentKeyStatus').textContent = 'Esa no parece una clave de Anthropic (empieza con sk-ant-).'; return; }
+      keyCfg.key = v;
+    }
+    keyCfg.model = modelSel.value;
+    if ($('#agentRemember').checked && keyCfg.key) store.set('dash-api-key', keyCfg.key); else store.del('dash-api-key');
+    store.set('dash-api-model', keyCfg.model);
+    if (!keyCfg.key) { syncSettings(); return; }
+    setMode('apikey');
+    setBox.hidden = true;
+    bubble('assistant', `Listo: uso IA con tu clave y ${MODELS.find((m) => m.id === keyCfg.model).name}. ¿Qué quieres hacer con tus datos?`);
+    suggestions();
+  });
+  $('#agentForget').addEventListener('click', () => {
+    keyCfg.key = '';
+    store.del('dash-api-key');
+    syncSettings();
+    if (mode === 'apikey') { setMode(sample ? (toolsOk ? 'tools' : 'plan') : 'basic'); bubble('assistant', 'Clave borrada de este navegador.'); }
+  });
 
   // ---------- Voz ----------
 
@@ -852,6 +963,7 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
   // ---------- Conexión con Claude ----------
 
   const ready = (async () => {
+    if (keyCfg.key) { setMode('apikey'); return; }
     if (!inClaude) { setMode('basic'); return; }
     try {
       const s = await window.claude.use('sample');

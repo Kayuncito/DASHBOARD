@@ -19,7 +19,7 @@ Sitio web estático para importar archivos **CSV**, **XLSX/XLS** o **TXT** y gen
 - **Archivos con varias hojas**: un asistente identifica cada hoja (datos, notas/instrucciones o calendario), abre la más útil, muestra las notas del archivo y sugiere cómo combinarlas: **unir** hojas por una columna en común (como BUSCARV, p. ej. agregar Año/Mes/Trimestre desde una tabla calendario) o **apilar** hojas con las mismas columnas.
 - **Series de tiempo**: detecta datos mensuales/trimestrales, promedia en vez de sumar, agrupa en una misma gráfica las columnas comparables y muestra el último valor con su cambio contra el periodo anterior.
 - **Varias series por gráfica**: desglosa por una categoría (p. ej. Mujeres / Hombres) o compara varias columnas numéricas.
-- **Asistente (texto o voz)**: pide en tus palabras lo que quieras hacer (“elimina duplicados y haz una gráfica de ventas por región”, “¿qué estado tiene mayor desempleo?”). Dentro de Claude usa IA y actúa sobre el dashboard: consulta, filtra, grafica, limpia, edita columnas y combina hojas, todo con deshacer. Fuera de Claude funciona en modo básico con comandos comunes.
+- **Asistente (texto o voz)**: pide en tus palabras lo que quieras hacer (“elimina duplicados y haz una gráfica de ventas por región”, “¿qué estado tiene mayor desempleo?”). Dentro de Claude usa IA y actúa sobre el dashboard: consulta, filtra, grafica, limpia, edita columnas y combina hojas, todo con deshacer. Fuera de Claude puedes usar **tu propia clave de la API de Claude** (botón ⚙ del asistente: eliges Opus 5.5, Sonnet 5.5 o Haiku 5.5; la clave se guarda solo en tu navegador) o el modo sin IA, que entiende las peticiones comunes.
 - **Limpieza de datos**: analizador con puntuación de calidad que detecta filas duplicadas, filas de totales/subtotales, valores escritos de distintas formas (`Norte` / `norte` / `NORTE`), celdas vacías, valores con formato incorrecto (`N/D` en una columna numérica), columnas que mezclan números y texto, valores atípicos y columnas vacías o constantes. Cada problema trae acciones (eliminar, rellenar, unificar, convertir) con **deshacer**, **restaurar original** y descarga de los datos limpios en **CSV** o **Excel**.
 - **Correcciones automáticas al importar**: detecta el encabezado aunque haya títulos arriba de la tabla, elimina filas y columnas vacías, quita espacios sobrantes y renombra encabezados vacíos o repetidos.
 - Descarga de cada gráfica como **PNG**, tema **claro/oscuro** y diseño adaptable a móvil.
@@ -35,7 +35,7 @@ js/book.js        Asistente de hojas: clasificación, unión y apilado
 js/agent.js       Asistente por texto/voz (IA dentro de Claude, comandos básicos fuera)
 js/app.js         Interfaz: filtros, KPIs, gráficas, tabla y panel de limpieza
 js/sample.js      Datos de ejemplo
-vendor/           Chart.js 4.4.1, SheetJS 0.18.5, PapaParse 5.4.1 (incluidas para funcionar sin internet)
+vendor/           Chart.js 4.4.1, SheetJS 0.18.5, PapaParse 5.4.1 y el SDK oficial de Anthropic 1.3.0 (MIT), incluidos para funcionar sin internet
 ```
 
 ## Publicar con GitHub Pages
