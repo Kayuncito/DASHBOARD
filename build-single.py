@@ -14,6 +14,7 @@ html = html.replace('<link rel="stylesheet" href="css/styles.css">', '<style>\n'
 def inline(m):
     code = (root / m.group(1)).read_text(encoding='utf-8')
     code = re.sub(r'</(script)', r'<\\/\1', code, flags=re.I)  # no cerrar la etiqueta antes de tiempo
+    code = code.replace('\ufffd', '\\ufffd')  # carácter de reemplazo literal -> escape JS equivalente
     return '<script>\n' + code + '\n</script>'
 
 

@@ -580,10 +580,40 @@
     ctx.fillStyle = palette().surface;
     ctx.fillRect(0, 0, out.width, out.height);
     ctx.drawImage(src, 0, 0);
+    const name = `${chartTitle(c).replace(/[^\w\sáéíóúñü-]/gi, '').trim() || 'grafica'}.png`;
+    out.toBlob((blob) => blob && saveFile(name, blob), 'image/png');
+  }
+
+  // Descarga un archivo. Dentro de claude.ai usa la capacidad "downloads" (pide confirmación);
+  // en un navegador normal usa un enlace de descarga.
+  let downloadsApi;
+  function getDownloads() {
+    if (downloadsApi === undefined) {
+      downloadsApi = window.claude && typeof window.claude.use === 'function'
+        ? window.claude.use('downloads').catch(() => null)
+        : Promise.resolve(null);
+    }
+    return downloadsApi;
+  }
+  getDownloads();
+  async function saveFile(filename, blob) {
+    const dl = await getDownloads();
+    if (dl) {
+      try { await dl.save({ filename, data: blob }); }
+      catch (err) {
+        if (err && err.code === 'declined') return;
+        if (err && err.code === 'rate_limited') toast('Ya hay una descarga pendiente de confirmar.');
+        else toast('No se pudo descargar el archivo en esta vista.');
+      }
+      return;
+    }
     const a = document.createElement('a');
-    a.href = out.toDataURL('image/png');
-    a.download = `${chartTitle(c).replace(/[^\w\sáéíóúñü-]/gi, '').trim() || 'grafica'}.png`;
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.append(a);
     a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
   // ---------- Diálogo de gráfica ----------
@@ -838,11 +868,7 @@
       return o;
     });
     const csv = '\uFEFF' + Papa.unparse(rows, { columns: state.columns.map((c) => c.name) });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-    a.download = baseName() + suffix + '.csv';
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    saveFile(baseName() + suffix + '.csv', new Blob([csv], { type: 'text/csv;charset=utf-8' }));
   }
 
   function exportXLSX() {
@@ -852,7 +878,8 @@
     ws['!cols'] = names.map((n) => ({ wch: Math.min(40, Math.max(10, n.length + 2)) }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, (state.sheet || 'Datos').slice(0, 31));
-    XLSX.writeFile(wb, baseName() + '_limpio.xlsx');
+    const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    saveFile(baseName() + '_limpio.xlsx', new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
   }
 
   // ---------- Tabla ----------
