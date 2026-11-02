@@ -140,7 +140,7 @@
           actions.push(fill(round(avg), `Rellenar con el promedio (${nf(avg)})`));
           actions.push(fill(med, `Rellenar con la mediana (${nf(med)})`));
         } else if (c.type === 'text') {
-          actions.push(fill('Sin dato', 'Rellenar con “Sin dato”'));
+          actions.push(fill('No especificado', 'Rellenar con “No especificado”'));
         }
         actions.push({ label: 'Eliminar filas vacías en esta columna', run: () => ({ columns, rows: rows.filter((_, i) => !empty.has(i)) }), message: `Se eliminaron ${nf(nulls.length)} filas sin “${name}”.` });
         add({

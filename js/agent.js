@@ -37,32 +37,26 @@
 
   // ---------- Contexto que se le da al asistente ----------
 
+  // Contexto compacto para el modelo: esquema + resumen estadístico (no datos crudos), estado y hallazgos.
   function context() {
     const t = S.tbl;
     const lines = [];
     const book = S.book;
     if (book.order.length > 1) lines.push(`Hojas del archivo: ${book.order.map((s) => `${s} (${book.sheets[s].rows.length} filas)`).join('; ')}`);
-    lines.push(`Hoja abierta: "${S.sheet}" con ${S.rows.length} filas.`);
-    lines.push('Columnas:');
-    S.columns.forEach((c) => {
-      let extra = '';
-      if (c.type === 'number') extra = ` rango ${fmtVal(c.min, c)} a ${fmtVal(c.max, c)}`;
-      else if (c.type === 'date' && c.min) extra = ` de ${D.dateKey(c.min, 'day').key} a ${D.dateKey(c.max, 'day').key}`;
-      else if (c.type === 'text') extra = ` ${c.unique} valores distintos${c.unique <= 15 ? ': ' + c.values.slice(0, 15).join(' | ') : ', p. ej. ' + c.values.slice(0, 4).join(' | ')}`;
-      const empty = S.rows.length - (c.filled || 0);
-      lines.push(`- ${c.name} [${typeName(c)}]${extra}${empty ? ` · ${empty} vacías` : ''}`);
-    });
+    lines.push(`Hoja abierta: "${S.sheet}". Resumen estadístico en JSON (columnas, tipos, suma/media/mediana/min/max/desv. estándar, top 5 por categoría y una muestra representativa):`);
+    lines.push(JSON.stringify(window.Insights.stats({ rows: S.rows, columns: S.columns })));
     const f = Object.entries(S.filters).map(([k, v]) => `${k} = ${[...v].join(', ')}`);
     if (S.dateFilter && (S.dateFilter.from || S.dateFilter.to)) f.push(`${S.dateFilter.col} entre ${S.dateFilter.from ? D.dateKey(S.dateFilter.from, 'day').key : '…'} y ${S.dateFilter.to ? D.dateKey(S.dateFilter.to, 'day').key : '…'}`);
-    lines.push(`Filtros activos: ${f.length ? f.join('; ') : 'ninguno'}`);
+    if (S.excludeOutliers) f.push(`excluyendo ${S.outliers.rows.size} valores atípicos`);
+    lines.push(`Filtros activos: ${f.length ? f.join('; ') : 'ninguno'} (${A.filteredRows().length} filas visibles).`);
     lines.push(`Gráficas en el dashboard: ${S.charts.length ? S.charts.map((c, i) => `#${i + 1} ${A.chartTitle(c)} (${c.type})`).join('; ') : 'ninguna'}`);
     const issues = S.report ? S.report.visible : [];
     lines.push(`Problemas de limpieza detectados (calidad ${S.report ? S.report.score : '?'}/100):`);
     if (!issues.length) lines.push('- ninguno');
     issues.slice(0, 15).forEach((i) => lines.push(`- id "${i.id}": ${i.title}. Opciones: ${i.actions.map((a, k) => `[${k}] ${a.label}`).join(' ')}`));
     if (t.log.length) lines.push(`Cambios ya aplicados: ${t.log.slice(-8).join(' / ')}`);
-    lines.push('Primeras filas:');
-    S.rows.slice(0, 3).forEach((r) => lines.push(JSON.stringify(Object.fromEntries(S.columns.map((c) => [c.name, fmtVal(r[c.name], c)])))));
+    const ins = A.insights().slice(0, 5);
+    if (ins.length) lines.push(`Hallazgos del motor estadístico local: ${ins.map((i) => i.text).join(' | ')}`);
     return lines.join('\n');
   }
 
@@ -434,6 +428,11 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
     const afterPor = t.includes(' por ') ? t.slice(t.indexOf(' por ') + 5) : '';
     const byCol = afterPor ? (mentionedCols(afterPor)[0] || {}).c : null;
 
+    // --- Smart Insights locales
+    if (has(t, /insight|hallazgo|conclusion|que encontraste|que descubriste|analisis (rapido|automatico)|resumen inteligente|pareto|anomal|tendencia(s)? principal/)) {
+      const ins = A.insights();
+      return ins.length ? `Hallazgos principales:\n${ins.map((i) => `${i.icon} ${i.text}`).join('\n')}` : 'No encontré hallazgos destacados con los filtros actuales.';
+    }
     // --- Ayuda, deshacer, restaurar
     if (has(t, /^(ayuda|help)$|que (puedes|sabes) hacer|como te uso|que comandos/)) return help();
     if (has(t, /deshac|deshaz|revierte|regresa(lo)? como estaba|ctrl z/)) return ACTIONS.limpieza({ accion: 'deshacer' });
@@ -656,23 +655,45 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
   let mode = inClaude ? 'checking' : 'basic';
   let basicReason = inClaude ? '' : 'Abriste la página fuera de Claude (GitHub Pages o archivo descargado), donde no hay IA disponible.';
   const MODE_LABEL = { checking: 'Conectando con Claude…', tools: 'Con IA (Claude)', plan: 'Con IA (Claude)', basic: 'Sin IA · modo básico', apikey: 'Con IA (tu clave)' };
-  // Modelos disponibles con clave propia (precio aproximado por petición del asistente).
-  const MODELS = [
-    { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', note: 'el más capaz · ~$0.06 USD por petición', fallback: true },
-    { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', note: 'muy bueno · ~$0.03 USD por petición', fallback: true },
-    { id: 'claude-haiku-5-5', name: 'Claude Haiku 5.5', note: 'rápido y económico · ~$0.002 USD por petición', fallback: false },
-  ];
+  // Proveedores con clave propia. Los modelos son sugerencias: el campo acepta cualquier nombre de modelo.
+  const PROVIDERS = {
+    claude: {
+      name: 'Claude (Anthropic)', keyRe: /^sk-ant-/, keyHint: 'empieza con sk-ant-', help: 'platform.claude.com → API Keys (con saldo en Billing)',
+      models: [
+        { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', note: 'el más capaz · ~$0.06 USD por petición', fallback: true },
+        { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', note: 'muy bueno · ~$0.03 USD por petición', fallback: true },
+        { id: 'claude-haiku-5-5', name: 'Claude Haiku 5.5', note: 'rápido y económico · ~$0.002 USD por petición', fallback: false },
+      ],
+    },
+    openai: {
+      name: 'OpenAI', keyRe: /^sk-/, keyHint: 'empieza con sk-', help: 'platform.openai.com → API keys',
+      models: [{ id: 'gpt-4.1-mini', name: 'gpt-4.1-mini', note: 'verifica el nombre vigente en tu cuenta' }, { id: 'gpt-4.1', name: 'gpt-4.1', note: '' }],
+    },
+    gemini: {
+      name: 'Google Gemini', keyRe: /^AI/, keyHint: 'empieza con AI', help: 'aistudio.google.com → Get API key',
+      models: [{ id: 'gemini-2.5-flash', name: 'gemini-2.5-flash', note: 'verifica el nombre vigente en tu cuenta' }, { id: 'gemini-2.5-pro', name: 'gemini-2.5-pro', note: '' }],
+    },
+  };
   const store = {
     get(k) { try { return localStorage.getItem(k); } catch { return null; } },
     set(k, v) { try { localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } },
     del(k) { try { localStorage.removeItem(k); } catch { /* sin almacenamiento */ } },
   };
+  // Migra la clave de la versión anterior (solo Claude).
+  if (store.get('dash-api-key') && !store.get('dash-key-claude')) { store.set('dash-key-claude', store.get('dash-api-key')); store.set('dash-model-claude', store.get('dash-api-model') || ''); store.del('dash-api-key'); store.del('dash-api-model'); }
   // La clave vive solo en este navegador (o solo en esta sesión si no se marca "recordar").
-  const keyCfg = { key: store.get('dash-api-key') || '', model: store.get('dash-api-model') || MODELS[0].id };
+  const keyCfg = { provider: store.get('dash-ai-provider') || 'claude', key: '', model: '' };
+  function loadProvider(p) {
+    keyCfg.provider = PROVIDERS[p] ? p : 'claude';
+    keyCfg.key = store.get(`dash-key-${keyCfg.provider}`) || '';
+    keyCfg.model = store.get(`dash-model-${keyCfg.provider}`) || PROVIDERS[keyCfg.provider].models[0].id;
+  }
+  loadProvider(keyCfg.provider);
+  const MODELS = PROVIDERS.claude.models;
   let welcome = null;
   function welcomeText() {
     if (mode === 'checking') return 'Conectando con Claude… Puedes escribir tu petición mientras tanto.';
-    if (mode === 'basic') return `Hola. Funciono sin IA (${basicReason.replace(/\.$/, '')}), pero entiendo las peticiones más comunes escritas con tus palabras. ${help()}\n\nPara usar IA aquí, toca ⚙ y pega tu clave de la API de Claude.`;
+    if (mode === 'basic') return `Hola. Funciono sin IA (${basicReason.replace(/\.$/, '')}), pero entiendo las peticiones más comunes escritas con tus palabras. ${help()}\n\nPara usar IA aquí, toca ⚙ y pega tu clave de Claude, OpenAI o Gemini.`;
     return 'Hola. Dime qué quieres hacer con tus datos: limpiarlos, preguntarme algo, filtrar, crear gráficas o combinar hojas. Puedes escribir o dictar.';
   }
   function setMode(m, reason) {
@@ -680,6 +701,8 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
     if (reason) basicReason = reason;
     const mdl = MODELS.find((x) => x.id === keyCfg.model);
     $('#agentMode').textContent = m === 'apikey' ? `Con IA · ${mdl ? mdl.name.replace('Claude ', '') : keyCfg.model}` : MODE_LABEL[m];
+    $('#agentMode').title = m === 'apikey' ? `${PROVIDERS[keyCfg.provider].name} · ${keyCfg.model}` : '';
+    if (A.renderInsights && S.book) A.renderInsights();
     $('#agentMode').classList.toggle('rec', m === 'tools' || m === 'plan' || m === 'apikey');
     if (welcome && log.firstChild === welcome && log.childElementCount === 1) welcome.textContent = welcomeText();
   }
@@ -824,6 +847,7 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
         turns.pop();
         return;
       }
+      if (code === 'provider_error') { out.textContent = e.message; turns.pop(); return; }
       if (code === 'refused_key') { out.textContent = 'Claude no puede ayudar con esa petición. Intenta pedirlo de otra forma.'; turns.pop(); return; }
       if (code === 'cancelled') out.textContent = (e.text || '') + ' (detenido)';
       else if (code === 'tools_unavailable') {
@@ -850,10 +874,132 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
   // ---------- IA con clave propia (API de Claude desde el navegador) ----------
 
   async function runWithKey(history, ctl, out, run) {
+    if (keyCfg.provider === 'openai') return runOpenAI(history, ctl, out, run);
+    if (keyCfg.provider === 'gemini') return runGemini(history, ctl, out, run);
+    return runClaude(history, ctl, out, run);
+  }
+  const stateMsg = (txt) => `=== ESTADO ACTUAL DEL DASHBOARD ===\n${context()}\n=== FIN DEL ESTADO ===\n\nPetición del usuario: ${txt}`;
+  function providerError(status, msg) {
+    const e = new Error(msg); e.code = 'provider_error';
+    if (status === 401 || status === 403 || /api key|apikey|invalid.*key|incorrect.*key/i.test(msg)) e.message = `La clave de ${PROVIDERS[keyCfg.provider].name} no es válida o no tiene permiso para ese modelo. Revísala en ⚙.`;
+    else if (status === 429) e.message = 'Se alcanzó el límite de uso o no hay saldo en tu cuenta del proveedor. Intenta más tarde o revisa tu facturación.';
+    else if (status === 404) e.message = `El modelo “${keyCfg.model}” no existe para tu cuenta. Escribe otro nombre de modelo en ⚙.`;
+    else e.message = `Error del proveedor (${status || 'sin conexión'}): ${msg}`;
+    return e;
+  }
+  async function postJSON(url, headers, body, signal) {
+    let res;
+    try { res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body), signal }); }
+    catch (e) { if (e.name === 'AbortError') throw e; throw providerError(0, 'No se pudo conectar. Revisa tu internet.'); }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw providerError(res.status, (data.error && (data.error.message || data.error.status)) || res.statusText);
+    return data;
+  }
+
+  // OpenAI (Chat Completions con herramientas) desde el navegador.
+  async function runOpenAI(history, ctl, out, run) {
+    const tools = TOOLS.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema || { type: 'object', properties: {} } } }));
+    const messages = [{ role: 'system', content: INSTRUCTIONS }, ...history.slice(0, -1), { role: 'user', content: stateMsg(history[history.length - 1].content) }];
+    let last = '';
+    for (let round = 0; round < 8; round++) {
+      const data = await postJSON('https://api.openai.com/v1/chat/completions', { authorization: `Bearer ${keyCfg.key}` }, { model: keyCfg.model, messages, tools }, ctl.signal);
+      const msg = data.choices && data.choices[0] && data.choices[0].message;
+      if (!msg) break;
+      if (msg.content) { last = msg.content; out.classList.remove('pending'); out.textContent = last; }
+      messages.push(msg);
+      if (!msg.tool_calls || !msg.tool_calls.length) break;
+      for (const tc of msg.tool_calls) {
+        let content;
+        try { content = run(tc.function.name, JSON.parse(tc.function.arguments || '{}')); content = typeof content === 'string' ? content : JSON.stringify(content); }
+        catch (err) { content = `Error: ${err.message}`; }
+        messages.push({ role: 'tool', tool_call_id: tc.id, content });
+      }
+    }
+    return last || 'Listo.';
+  }
+
+  // Google Gemini (generateContent con declaraciones de funciones) desde el navegador.
+  function geminiSchema(sch) {
+    if (!sch || typeof sch !== 'object') return sch;
+    const o = {};
+    Object.entries(sch).forEach(([k, v]) => {
+      if (k === 'type') o.type = String(v).toUpperCase();
+      else if (k === 'properties') o.properties = Object.fromEntries(Object.entries(v).map(([pk, pv]) => [pk, geminiSchema(pv)]));
+      else if (k === 'items') o.items = geminiSchema(v);
+      else if (['required', 'enum', 'description'].includes(k)) o[k] = v;
+    });
+    return o;
+  }
+  async function runGemini(history, ctl, out, run) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(keyCfg.model)}:generateContent`;
+    const tools = [{ functionDeclarations: TOOLS.map((t) => ({ name: t.name, description: t.description, parameters: geminiSchema(t.inputSchema || { type: 'object', properties: {} }) })) }];
+    const contents = [...history.slice(0, -1).map((t) => ({ role: t.role === 'assistant' ? 'model' : 'user', parts: [{ text: t.content }] })), { role: 'user', parts: [{ text: stateMsg(history[history.length - 1].content) }] }];
+    let last = '';
+    for (let round = 0; round < 8; round++) {
+      const data = await postJSON(url, { 'x-goog-api-key': keyCfg.key }, { systemInstruction: { parts: [{ text: INSTRUCTIONS }] }, contents, tools }, ctl.signal);
+      const content = data.candidates && data.candidates[0] && data.candidates[0].content;
+      if (!content || !content.parts) break;
+      const txt = content.parts.filter((p) => p.text).map((p) => p.text).join('').trim();
+      if (txt) { last = txt; out.classList.remove('pending'); out.textContent = last; }
+      contents.push(content);
+      const calls = content.parts.filter((p) => p.functionCall);
+      if (!calls.length) break;
+      contents.push({ role: 'user', parts: calls.map((p) => {
+        let result;
+        try { result = run(p.functionCall.name, p.functionCall.args || {}); } catch (err) { result = { error: err.message }; }
+        return { functionResponse: { name: p.functionCall.name, response: { result } } };
+      }) });
+    }
+    return last || 'Listo.';
+  }
+
+  // Una sola respuesta de texto (sin herramientas), con cualquier proveedor o con la IA de Claude.
+  async function complete(prompt, signal) {
+    if (mode === 'apikey') {
+      if (keyCfg.provider === 'openai') {
+        const d = await postJSON('https://api.openai.com/v1/chat/completions', { authorization: `Bearer ${keyCfg.key}` }, { model: keyCfg.model, messages: [{ role: 'user', content: prompt }] }, signal);
+        return (d.choices[0].message.content || '').trim();
+      }
+      if (keyCfg.provider === 'gemini') {
+        const d = await postJSON(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(keyCfg.model)}:generateContent`, { 'x-goog-api-key': keyCfg.key }, { contents: [{ role: 'user', parts: [{ text: prompt }] }] }, signal);
+        return d.candidates[0].content.parts.map((p) => p.text || '').join('').trim();
+      }
+      const client = new window.Anthropic({ apiKey: keyCfg.key, dangerouslyAllowBrowser: true, maxRetries: 1 });
+      const model = MODELS.find((x) => x.id === keyCfg.model) || { id: keyCfg.model };
+      const params = { model: model.id, max_tokens: 4000, messages: [{ role: 'user', content: prompt }], output_config: { effort: 'low' } };
+      const resp = model.fallback
+        ? await client.beta.messages.create({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' }, { signal })
+        : await client.messages.create(params, { signal });
+      if (resp.stop_reason === 'refusal') throw new Error('El modelo no pudo responder a esta petición.');
+      return resp.content.filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
+    }
+    if (sample) return (await sample(prompt, { modelTier: tier, cache: false })).text.trim();
+    throw new Error('No hay IA disponible.');
+  }
+
+  // Insights redactados por la IA a partir del resumen estadístico (se guardan en la sesión).
+  async function aiInsights() {
+    if (!S.book) return;
+    const box = document.querySelector('#insights .ai-insights') || document.querySelector('#insights');
+    A.toast('Analizando los datos con IA…');
+    const prompt = `${INSTRUCTIONS}\n\nAnaliza este conjunto de datos y escribe de 3 a 5 hallazgos clave para un reporte ejecutivo, en viñetas cortas con cifras concretas (usa % y separador de miles). Incluye una recomendación accionable al final. No inventes datos que no estén en el resumen.\n\n${context()}`;
+    try {
+      const text = await complete(prompt);
+      S.aiInsights = { text, at: Date.now(), model: mode === 'apikey' ? keyCfg.model : 'Claude' };
+      A.renderInsights();
+      A.notifyChange();
+    } catch (err) {
+      A.toast(`No se pudo generar el análisis: ${err.message || err.code || err}`);
+    }
+    return box;
+  }
+  window.DashAI = { available: () => mode === 'apikey' || mode === 'tools' || mode === 'plan', insights: aiInsights };
+
+  async function runClaude(history, ctl, out, run) {
     const Anthropic = window.Anthropic;
     if (!Anthropic) throw new Error('No se cargó la librería de Anthropic.');
     const client = new Anthropic({ apiKey: keyCfg.key, dangerouslyAllowBrowser: true, maxRetries: 1 });
-    const model = MODELS.find((x) => x.id === keyCfg.model) || MODELS[0];
+    const model = MODELS.find((x) => x.id === keyCfg.model) || { id: keyCfg.model, fallback: /opus|sonnet/.test(keyCfg.model) };
     const tools = TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema || { type: 'object', properties: {} } }));
     const last = history[history.length - 1];
     const messages = [
@@ -897,34 +1043,44 @@ Usa las herramientas para actuar sobre los datos: no inventes columnas ni valore
 
   const setBox = $('#agentSettings');
   const keyInput = $('#agentKey');
-  const modelSel = $('#agentModel');
-  modelSel.replaceChildren(...MODELS.map((m) => { const o = document.createElement('option'); o.value = m.id; o.textContent = `${m.name} — ${m.note}`; return o; }));
+  const modelInput = $('#agentModel');
+  const provSel = $('#agentProvider');
+  provSel.replaceChildren(...Object.entries(PROVIDERS).map(([k, p]) => { const o = document.createElement('option'); o.value = k; o.textContent = p.name; return o; }));
   function syncSettings() {
-    modelSel.value = keyCfg.model;
+    const P = PROVIDERS[keyCfg.provider];
+    provSel.value = keyCfg.provider;
+    $('#agentModels').replaceChildren(...P.models.map((m) => { const o = document.createElement('option'); o.value = m.id; o.label = `${m.name}${m.note ? ' — ' + m.note : ''}`; return o; }));
+    modelInput.value = keyCfg.model;
+    $('#agentModelHint').textContent = P.models.map((m) => `${m.id}${m.note ? ` (${m.note})` : ''}`).join(' · ');
+    $('#agentKeyHelp').textContent = `Obtén tu clave en ${P.help}.`;
+    keyInput.placeholder = keyCfg.provider === 'claude' ? 'sk-ant-…' : keyCfg.provider === 'openai' ? 'sk-…' : 'AIza…';
     keyInput.value = keyCfg.key ? '••••••••' + keyCfg.key.slice(-4) : '';
-    $('#agentKeyStatus').textContent = keyCfg.key ? `Clave guardada (termina en ${keyCfg.key.slice(-4)}).` : 'Sin clave: el asistente usa ' + (inClaude ? 'la IA de Claude o el modo básico.' : 'el modo básico.');
+    $('#agentKeyStatus').textContent = keyCfg.key ? `Clave de ${P.name} guardada (termina en ${keyCfg.key.slice(-4)}).` : 'Sin clave: el asistente usa ' + (inClaude ? 'la IA de Claude o el modo básico.' : 'el modo básico.');
     $('#agentForget').hidden = !keyCfg.key;
   }
+  provSel.addEventListener('change', () => { loadProvider(provSel.value); syncSettings(); });
   $('#agentSettingsBtn').addEventListener('click', () => { setBox.hidden = !setBox.hidden; syncSettings(); });
   keyInput.addEventListener('focus', () => { if (keyInput.value.startsWith('••')) keyInput.value = ''; });
   $('#agentSaveKey').addEventListener('click', () => {
+    const P = PROVIDERS[keyCfg.provider];
     const v = keyInput.value.trim();
     if (v && !v.startsWith('••')) {
-      if (!/^sk-ant-/.test(v)) { $('#agentKeyStatus').textContent = 'Esa no parece una clave de Anthropic (empieza con sk-ant-).'; return; }
+      if (!P.keyRe.test(v)) { $('#agentKeyStatus').textContent = `Esa no parece una clave de ${P.name} (${P.keyHint}).`; return; }
       keyCfg.key = v;
     }
-    keyCfg.model = modelSel.value;
-    if ($('#agentRemember').checked && keyCfg.key) store.set('dash-api-key', keyCfg.key); else store.del('dash-api-key');
-    store.set('dash-api-model', keyCfg.model);
+    keyCfg.model = modelInput.value.trim() || P.models[0].id;
+    if ($('#agentRemember').checked && keyCfg.key) store.set(`dash-key-${keyCfg.provider}`, keyCfg.key); else store.del(`dash-key-${keyCfg.provider}`);
+    store.set(`dash-model-${keyCfg.provider}`, keyCfg.model);
+    store.set('dash-ai-provider', keyCfg.provider);
     if (!keyCfg.key) { syncSettings(); return; }
     setMode('apikey');
     setBox.hidden = true;
-    bubble('assistant', `Listo: uso IA con tu clave y ${MODELS.find((m) => m.id === keyCfg.model).name}. ¿Qué quieres hacer con tus datos?`);
+    bubble('assistant', `Listo: uso IA de ${P.name} con el modelo ${keyCfg.model}. ¿Qué quieres hacer con tus datos?`);
     suggestions();
   });
   $('#agentForget').addEventListener('click', () => {
     keyCfg.key = '';
-    store.del('dash-api-key');
+    store.del(`dash-key-${keyCfg.provider}`);
     syncSettings();
     if (mode === 'apikey') { setMode(sample ? (toolsOk ? 'tools' : 'plan') : 'basic'); bubble('assistant', 'Clave borrada de este navegador.'); }
   });

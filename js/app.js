@@ -47,7 +47,13 @@
     table: { page: 0, sort: null, dir: 1, search: '', size: 50 },
     editing: null,
     nextId: 1,
+    excludeOutliers: false,             // excluir atípicos de gráficas y KPIs (sin borrarlos de la tabla)
+    outliers: { rows: new Set(), detail: [] },
+    explorer: { x: '', y: '', agg: '' }, // tabla dinámica
+    aiInsights: null,                    // { text, at } generados por IA (se guardan en la sesión)
+    sessionId: null,
   };
+  const isMobile = () => window.matchMedia('(max-width: 767px)').matches;
 
   // ---------- Tema ----------
 
@@ -103,8 +109,9 @@
   });
 
   $('#btnSample').addEventListener('click', () => {
-    const table = D.parseDelimited(window.buildSampleCSV());
-    openBook({ sheets: { Ventas: table }, order: ['Ventas'] }, 'ventas_ejemplo.csv');
+    const csv = window.buildSampleCSV();
+    const table = D.parseDelimited(csv);
+    openBook({ sheets: { Ventas: table }, order: ['Ventas'] }, 'ventas_ejemplo.csv', { size: csv.length });
   });
   $('#btnNewFile').addEventListener('click', () => fileInput.click());
 
@@ -125,7 +132,7 @@
     dropZone.querySelector('.dz-title').textContent = 'Procesando…';
     try {
       const book = await D.readFile(file);
-      openBook(book, file.name);
+      openBook(book, file.name, { size: file.size });
     } catch (err) {
       console.error(err);
       showError('No se pudo leer el archivo: ' + (err.message || err));
@@ -134,16 +141,23 @@
     }
   }
 
-  function openBook(book, name) {
+  function openBook(book, name, opts = {}) {
     state.book = book;
     state.fileName = name;
+    state.sessionId = opts.sessionId || `s${Date.now()}`;
+    state.loadedAt = opts.loadedAt || Date.now();
+    state.fileSize = opts.size || 0;
+    state.aiInsights = null;
+    state.excludeOutliers = false;
+    state.explorer = { x: '', y: '', agg: '' };
     const sel = $('#sheetSelect');
     sel.replaceChildren(...book.order.map((s) => el('option', { value: s }, s)));
     $('#sheetPicker').hidden = book.order.length < 2;
     $('#btnBook').hidden = book.order.length < 2;
     analyzeBook();
-    openSheet(state.bookInfo.recommended || book.order[0]);
-    if (book.order.length > 1) openBookDialog();
+    openSheet(opts.sheet && book.sheets[opts.sheet] ? opts.sheet : state.bookInfo.recommended || book.order[0]);
+    if (book.order.length > 1 && !opts.silent) openBookDialog();
+    if (window.DashSession && !opts.silent) window.DashSession.saveNow();
   }
 
   $('#sheetSelect').addEventListener('change', (e) => openSheet(e.target.value));
@@ -265,6 +279,19 @@
     return out;
   }
 
+  // Par de columnas numéricas con la correlación más fuerte (evita pares triviales r≈1).
+  function scatterPair(m) {
+    let best = null;
+    const nums = m.filter((c) => !c.percent).slice(0, 6);
+    for (let i = 0; i < nums.length; i++) for (let j = i + 1; j < nums.length; j++) {
+      const xs = [], ys = [];
+      state.rows.forEach((r) => { const a = r[nums[i].name], b = r[nums[j].name]; if (typeof a === 'number' && typeof b === 'number') { xs.push(a); ys.push(b); } });
+      const r = window.Insights.pearson(xs, ys);
+      if (r !== null && Math.abs(r) < 0.995 && (!best || Math.abs(r) > Math.abs(best.r))) best = { a: nums[i], b: nums[j], r };
+    }
+    return best && Math.abs(best.r) >= 0.3 ? [best.a, best.b] : null;
+  }
+
   function suggestCharts() {
     const m = metrics();
     const cats = categories();
@@ -281,7 +308,7 @@
         const groups = [...clusterByScale(m.filter((x) => !x.percent)), ...clusterByScale(m.filter((x) => x.percent))];
         groups.slice(0, 5).forEach((g, i) => add({
           type: i === 0 && g.length === 1 ? 'area' : 'line', x: date.name, y: g[0].name, ys: g.slice(1).map((c) => c.name),
-          agg: 'avg', grain: t.grain, wide: i === 0,
+          agg: 'avg', grain: t.grain, wide: i === 0, trend: g.length === 1,
           title: g.length > 1 ? `${g.map((c) => c.name).join(', ')} por ${date.name}` : '',
         }));
       } else {
@@ -295,21 +322,30 @@
 
     const agg = defaultAgg(m1, t);
     const y = m1 ? m1.name : null;
-    if (date) add({ type: 'area', x: date.name, y, agg, grain: t.grain || D.autoGrain(date), wide: true });
+    // Fecha + número: línea/área con agrupación automática y línea de tendencia.
+    if (date) add({ type: 'area', x: date.name, y, agg, grain: t.grain || D.autoGrain(date), wide: true, trend: true });
     // Columna de nombres (una fila por elemento: estados, productos, clientes…).
-    const label = state.columns.find((c) => c.type === 'text' && !c.categorical && c.unique >= 3 && c.unique <= 500 && c.unique >= c.filled * 0.9 && !(c.values || []).every((v) => /^[\d\W_]+$/.test(v)));
+    const label = labelColumn();
     if (label && m1) add({ type: 'hbar', x: label.name, y, agg, limit: 15, other: false, wide: !date, title: `${y} por ${label.name} (top 15)` });
     const pct = m.find((x) => x.percent && x !== m1);
     if (label && pct) add({ type: 'hbar', x: label.name, y: pct.name, agg: 'avg', limit: 15, other: false, title: `${pct.name} por ${label.name} (top 15)` });
     const small = [...cats].filter((c) => c.unique <= 6).sort((a, b) => a.unique - b.unique)[0];
     const main = cats.find((c) => c !== small) || null;
-    if (main) add({ type: 'bar', x: main.name, y, agg });
-    if (small) add({ type: agg === 'sum' || agg === 'count' ? 'pie' : 'bar', x: small.name, y, agg, limit: 6 });
+    // Categoría + número: ≤ 6 categorías → dona; más → barras horizontales Top 10 + "Otros".
+    const catChart = (c, yName, a) => {
+      const yC = yName ? col(yName) : null;
+      add({ type: autoChartType(c, yC, a), x: c.name, y: yName, agg: a, limit: 10 });
+    };
+    if (main) catChart(main, y, agg);
+    if (small) catChart(small, y, agg);
     const restCats = cats.filter((c) => c !== main && c !== small);
-    if (restCats[0]) add({ type: 'hbar', x: restCats[0].name, y, agg });
-    if (restCats[1] && m[1]) add({ type: 'hbar', x: restCats[1].name, y: m[1].name, agg: 'avg' });
-    else if (restCats[1]) add({ type: 'bar', x: restCats[1].name, y, agg });
-    if (m.length >= 2 && !m[1].percent && !label && out.length < 6) add({ type: 'scatter', x: m[0].name, y: m[1].name, agg: 'none' });
+    if (restCats[0]) catChart(restCats[0], y, agg);
+    if (restCats[1] && m[1]) catChart(restCats[1], m[1].name, defaultAgg(m[1], t));
+    // Dos números: dispersión con coeficiente de correlación de Pearson.
+    if (m.length >= 2 && out.length < 6) {
+      const pair = scatterPair(m);
+      if (pair) add({ type: 'scatter', x: pair[0].name, y: pair[1].name, agg: 'none' });
+    }
 
     if (!out.length) {
       const first = state.columns.find((c) => c.type === 'text') || state.columns[0];
@@ -396,11 +432,13 @@
   });
 
   // Filas filtradas; `except` omite el filtro de una columna (para resaltar en lugar de ocultar).
-  function filteredRows(except) {
+  function filteredRows(except, opts = {}) {
     const fs = Object.entries(state.filters).filter(([c]) => c !== except);
     const df = state.dateFilter && (state.dateFilter.from || state.dateFilter.to) && state.dateFilter.col !== except ? state.dateFilter : null;
-    if (!fs.length && !df) return state.rows;
+    const out = state.excludeOutliers && !opts.table && state.outliers.rows.size ? state.outliers.rows : null;
+    if (!fs.length && !df && !out) return state.rows;
     return state.rows.filter((r) => {
+      if (out && out.has(r)) return false;
       for (const [c, set] of fs) if (!set.has(r[c])) return false;
       if (df) {
         const v = r[df.col];
@@ -422,22 +460,42 @@
   function refresh() {
     syncFilterControls();
     renderChips();
+    renderOutlierToggle();
     renderKpis();
+    renderInsights();
+    renderExplorer();
     renderCharts();
     state.table.page = 0;
     renderTable();
+    notifyChange();
+  }
+
+  // Avisa al módulo de sesión (IndexedDB) que hay cambios que guardar.
+  function notifyChange() { if (window.DashSession && state.book) window.DashSession.schedule(); }
+
+  // ---------- Valores atípicos (excluir temporalmente) ----------
+
+  function renderOutlierToggle() {
+    const box = $('#outlierToggle');
+    const n = state.outliers.rows.size;
+    box.hidden = !n;
+    if (!n) return;
+    const det = state.outliers.detail.map((d) => `${d.col}: ${d.n}`).join(', ');
+    box.replaceChildren(el('label', { class: 'check', title: `Valores extremos (IQR × 3) — ${det}` },
+      el('input', { type: 'checkbox', checked: state.excludeOutliers, onchange: (e) => { state.excludeOutliers = e.target.checked; refresh(); } }),
+      ` Excluir ${D.fmtNum(n)} atípico(s) de las gráficas`));
   }
 
   // ---------- KPIs ----------
 
-  function renderKpis() {
+  // Tarjetas de KPI: valor abreviado + cifra exacta (visible siempre, también en exportaciones).
+  function kpiTiles() {
     const rows = filteredRows();
-    const box = $('#kpis');
     const tiles = [];
     const total = state.rows.length;
     tiles.push({ label: 'Registros', value: D.fmtNum(rows.length), sub: rows.length === total ? 'Total del archivo' : `de ${D.fmtNum(total)} (${D.fmtNum((rows.length / total) * 100)}%)` });
     const t = timeInfo();
-    const fmtM = (m, v) => (m.percent ? D.fmtPct(v) : D.fmtCompact(v));
+    const val = (m, v) => ({ value: D.fmtValue(v, m, true), exact: D.isCompacted(v, m) ? D.fmtValue(v, m, false) : '' });
     if (t.onePer) {
       // Serie de tiempo: último valor y cambio contra el periodo anterior.
       const dc = t.date.name;
@@ -449,23 +507,24 @@
         const last = withVal[withVal.length - 1], prev = withVal[withVal.length - 2];
         if (!last) return;
         let sub = D.dateKey(last[dc], t.grain === 'quarter' ? 'quarter' : 'month').label;
+        let trend = '';
         if (prev) {
           const dv = last[m.name] - prev[m.name];
+          trend = dv > 0 ? 'up' : dv < 0 ? 'down' : '';
           const arrow = dv > 0 ? '▲' : dv < 0 ? '▼' : '=';
           sub += m.percent
             ? ` · ${arrow} ${D.fmtNum(Math.abs(dv * 100))} pp vs anterior`
             : prev[m.name] ? ` · ${arrow} ${D.fmtNum(Math.abs((dv / prev[m.name]) * 100))}% vs anterior` : '';
         }
-        tiles.push({ label: `${m.name} · último`, value: fmtM(m, last[m.name]), title: D.fmtNum(last[m.name]), sub });
+        tiles.push({ label: `${m.name} · último`, ...val(m, last[m.name]), sub, trend });
       });
     } else metrics().slice(0, 3).forEach((m) => {
-      const sum = D.summarize(rows, m.name, 'sum');
-      const avg = D.summarize(rows, m.name, 'avg');
       if (m.percent || t.periodic) {
-        tiles.push({ label: `${m.name} · promedio`, value: fmtM(m, avg), title: D.fmtNum(avg), sub: `Mín. ${fmtM(m, D.summarize(rows, m.name, 'min'))} · Máx. ${fmtM(m, D.summarize(rows, m.name, 'max'))}` });
+        const avg = D.summarize(rows, m.name, 'avg');
+        tiles.push({ label: `${m.name} · promedio`, ...val(m, avg), sub: `Mín. ${D.fmtValue(D.summarize(rows, m.name, 'min'), m, true)} · Máx. ${D.fmtValue(D.summarize(rows, m.name, 'max'), m, true)}` });
         return;
       }
-      tiles.push({ label: `${m.name} · total`, value: D.fmtCompact(sum), title: D.fmtNum(sum), sub: `Promedio: ${D.fmtNum(avg)}` });
+      tiles.push({ label: `${m.name} · total`, ...val(m, D.summarize(rows, m.name, 'sum')), sub: `Promedio: ${D.fmtValue(D.summarize(rows, m.name, 'avg'), m, true)}` });
     });
     if (state.dateFilter) {
       const dc = state.dateFilter.col;
@@ -478,8 +537,93 @@
       const cats = categories();
       if (cats[0]) tiles.push({ label: `${cats[0].name} · únicos`, value: D.fmtNum(D.summarize(rows, cats[0].name, 'distinct')), sub: `de ${D.fmtNum(cats[0].unique)} en total` });
     }
-    box.replaceChildren(...tiles.map((t) => el('div', { class: 'kpi', title: t.title },
-      el('div', { class: 'label' }, t.label), el('div', { class: 'value' }, t.value), el('div', { class: 'sub' }, t.sub))));
+    return tiles;
+  }
+  function kpiEl(t) {
+    return el('div', { class: 'kpi', title: t.exact || t.value },
+      el('div', { class: 'label' }, t.label),
+      el('div', { class: `value${t.trend ? ' ' + t.trend : ''}` }, t.value),
+      t.exact ? el('div', { class: 'exact' }, t.exact) : null,
+      el('div', { class: 'sub' }, t.sub));
+  }
+  function renderKpis() { $('#kpis').replaceChildren(...kpiTiles().map(kpiEl)); }
+
+  // ---------- Smart Insights (motor local + IA opcional) ----------
+
+  function labelColumn() {
+    return state.columns.find((c) => c.type === 'text' && !c.categorical && !c.idLike && c.unique >= 3 && c.unique <= 500 && c.unique >= c.filled * 0.9 && !(c.values || []).every((v) => /^[\d\W_]+$/.test(v)));
+  }
+  function insights() {
+    const t = timeInfo();
+    return window.Insights.generate({ rows: filteredRows(), columns: state.columns, metrics: metrics(), categories: categories(), time: t.date ? t : null, label: labelColumn(), log: state.tbl ? state.tbl.log : [], agg: (m) => defaultAgg(m, t) });
+  }
+  function renderInsights() {
+    const box = $('#insights');
+    const list = insights();
+    const ai = state.aiInsights;
+    if (!list.length && !ai) { box.hidden = true; return; }
+    box.hidden = false;
+    const expanded = box.dataset.expanded === '1';
+    const shown = expanded ? list : list.slice(0, 4);
+    box.replaceChildren(
+      el('div', { class: 'card-head' },
+        el('div', {}, el('h2', {}, '✨ Smart Insights'), el('div', { class: 'card-sub' }, 'Hallazgos calculados automáticamente sobre los datos filtrados')),
+        el('div', { class: 'card-actions' },
+          window.DashAI && window.DashAI.available() ? el('button', { class: 'btn sm agent-btn', onclick: () => window.DashAI.insights() }, ai ? 'Actualizar con IA' : 'Mejorar con IA') : null,
+          list.length > 4 ? el('button', { class: 'btn sm ghost', onclick: () => { box.dataset.expanded = expanded ? '0' : '1'; renderInsights(); } }, expanded ? 'Ver menos' : `Ver ${list.length - 4} más`) : null)),
+      el('ul', { class: 'insight-list' }, shown.map((i) => el('li', { class: `insight ${i.kind}` }, el('span', { class: 'ico', 'aria-hidden': 'true' }, i.icon), el('span', {}, i.text)))),
+      ...(ai ? [el('div', { class: 'ai-insights' }, el('b', {}, '🤖 Análisis de la IA'), el('div', {}, ai.text))] : []));
+  }
+
+  // ---------- Explorador (tabla dinámica) ----------
+
+  function renderExplorer() {
+    const box = $('#explorer');
+    const nums = metrics();
+    const groupable = state.columns.filter((c) => (c.type === 'text' && !c.idLike && c.unique >= 2 && c.unique <= 500) || (c.type === 'date' && c.unique > 1));
+    if (!groupable.length) { box.hidden = true; return; }
+    box.hidden = false;
+    const ex = state.explorer;
+    if (!groupable.some((c) => c.name === ex.x)) ex.x = (categories()[0] || groupable[0]).name;
+    if (ex.y && !nums.some((c) => c.name === ex.y)) ex.y = '';
+    if (!ex.y && nums[0]) ex.y = nums[0].name;
+    if (!ex.agg) ex.agg = nums[0] ? defaultAgg(col(ex.y), timeInfo()) : 'count';
+    const sel = (options, value, onchange, label) => {
+      const s2 = el('select', { 'aria-label': label, onchange }, options.map(([v, t]) => el('option', { value: v }, t)));
+      s2.value = value;
+      return el('label', { class: 'field' }, el('span', {}, label), s2);
+    };
+    const xc = col(ex.x), yc = ex.agg === 'count' ? null : col(ex.y);
+    const rows = filteredRows();
+    const t = timeInfo();
+    const data = D.aggregate(rows, xc, yc ? yc.name : null, ex.agg, { grain: t.grain || (xc.type === 'date' ? D.autoGrain(xc) : undefined), limit: xc.type === 'text' ? 10 : 0 });
+    const total = data.reduce((a, d) => a + (d.value || 0), 0);
+    const additive = ex.agg === 'sum' || ex.agg === 'count';
+    const fmt = (v) => (yc ? D.fmtValue(v, yc, false) : D.fmtNum(v));
+    const auto = autoChartType(xc, yc, ex.agg);
+    box.replaceChildren(
+      el('div', { class: 'card-head' }, el('div', {}, el('h2', {}, 'Explorador'), el('div', { class: 'card-sub' }, 'Cruza cualquier columna con una métrica; se actualiza con los filtros'))),
+      el('div', { class: 'explorer-controls' },
+        sel(groupable.map((c) => [c.name, c.name]), ex.x, (e) => { ex.x = e.target.value; renderExplorer(); notifyChange(); }, 'Eje X / Categoría'),
+        sel([['', '(conteo de registros)'], ...nums.map((c) => [c.name, c.name])], ex.agg === 'count' ? '' : ex.y, (e) => { ex.y = e.target.value; if (!ex.y) ex.agg = 'count'; else if (ex.agg === 'count') ex.agg = defaultAgg(col(ex.y), timeInfo()); renderExplorer(); notifyChange(); }, 'Métrica Y'),
+        sel([['sum', 'Suma'], ['avg', 'Promedio'], ['count', 'Conteo'], ['max', 'Máximo'], ['min', 'Mínimo']], ex.agg, (e) => { ex.agg = e.target.value; if (ex.agg !== 'count' && !ex.y && nums[0]) ex.y = nums[0].name; renderExplorer(); notifyChange(); }, 'Operación'),
+        el('button', { class: 'btn primary', disabled: !data.length, onclick: () => {
+          state.charts.unshift({ id: state.nextId++, type: auto, x: xc.name, y: yc ? yc.name : null, agg: ex.agg, grain: t.grain || 'month', limit: 10, sort: null, title: '', wide: xc.type === 'date', trend: xc.type === 'date' });
+          renderCharts(); notifyChange(); toast('Gráfica agregada al dashboard.');
+        } }, '+ Agregar como gráfica')),
+      data.length
+        ? el('div', { class: 'table-wrap pivot' }, el('table', {},
+          el('thead', {}, el('tr', {}, el('th', {}, xc.name), el('th', { class: 'num' }, yc ? `${AGG_LABEL[ex.agg]} de ${yc.name}` : 'Registros'), additive ? el('th', { class: 'num' }, '% del total') : null)),
+          el('tbody', {}, data.map((d) => el('tr', {}, el('td', {}, d.label), el('td', { class: 'num', title: fmt(d.value) }, fmt(d.value)), additive ? el('td', { class: 'num' }, total ? `${D.fmtNum((d.value / total) * 100)}%` : '—') : null)))))
+        : el('div', { class: 'chart-empty', style: 'height:80px' }, 'Sin datos para los filtros actuales'));
+  }
+
+  // Regla de selección automática: fecha → línea; ≤6 categorías → dona; más → barras horizontales (Top 10 + Otros).
+  function autoChartType(xc, yc, agg) {
+    if (xc.type === 'date') return 'line';
+    if (xc.type === 'number') return yc ? 'scatter' : 'bar';
+    if (xc.unique <= 6 && (agg === 'sum' || agg === 'count')) return 'pie';
+    return 'hbar';
   }
 
   // ---------- Gráficas ----------
@@ -503,7 +647,10 @@
       return;
     }
     state.charts.forEach((c) => box.append(renderChartCard(c)));
+    notifyChange();
   }
+  // Al cruzar el punto de corte de celular, volver a dibujar (leyendas abajo, etiquetas rotadas).
+  window.matchMedia('(max-width: 767px)').addEventListener('change', () => { if (state.book) renderCharts(); });
 
   const ICONS = {
     edit: 'M3 17.2V21h3.8l11-11-3.8-3.8zM20.7 7a1 1 0 0 0 0-1.4l-2.3-2.3a1 1 0 0 0-1.4 0l-1.8 1.8 3.8 3.8z',
@@ -541,10 +688,14 @@
     return card;
   }
 
-  function buildConfig(c) {
+  // opts.export: render fijo para exportar (sin animación, alta densidad, sin interacción).
+  function buildConfig(c, opts = {}) {
     const p = palette();
     const xc = col(c.x);
     if (!xc) return null;
+    const exp = !!opts.export;
+    const mobile = exp ? !!opts.mobile : isMobile();
+    const base0 = exp ? { responsive: false, maintainAspectRatio: false, animation: false, devicePixelRatio: 2, events: [] } : { responsive: true, maintainAspectRatio: false, animation: { duration: 300 } };
     Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
     Chart.defaults.color = p.text;
 
@@ -554,15 +705,16 @@
     };
     const axis = (title) => ({
       grid: { color: p.grid, drawTicks: false }, border: { display: false },
-      ticks: { color: p.text, padding: 6, maxRotation: 0, autoSkip: true, callback(v) { const l = this.getLabelForValue ? this.getLabelForValue(v) : v; return typeof l === 'number' ? D.fmtCompact(l) : truncate(String(l), 18); } },
+      ticks: { color: p.text, padding: 6, maxRotation: mobile ? 45 : 0, autoSkip: true, font: exp ? { size: 13 } : undefined, callback(v) { const l = this.getLabelForValue ? this.getLabelForValue(v) : v; return typeof l === 'number' ? D.fmtCompact(l) : truncate(String(l), mobile ? 12 : 18); } },
       title: title ? { display: true, text: title, color: p.muted } : undefined,
     });
     const yc = c.y ? col(c.y) : null;
     const yPct = !!(yc && yc.percent && ['sum', 'avg', 'min', 'max'].includes(c.agg));
-    const fmtV = (v) => (yPct ? D.fmtPct(v) : D.fmtNum(v));
-    const valueAxis = (title) => ({
+    const yFmtCol = yc && ['sum', 'avg', 'min', 'max'].includes(c.agg) ? yc : null;
+    const fmtV = (v) => D.fmtValue(v, yFmtCol, false);
+    const valueAxis = (title, fc = yFmtCol) => ({
       grid: { color: p.grid, drawTicks: false }, border: { display: false }, beginAtZero: true,
-      ticks: { color: p.text, padding: 6, callback: (v) => (yPct ? D.fmtPct(v) : D.fmtCompact(v)) },
+      ticks: { color: p.text, padding: 6, font: exp ? { size: 13 } : undefined, callback: (v) => D.fmtValue(v, fc, true) },
       title: title ? { display: true, text: title, color: p.muted } : undefined,
     });
 
@@ -575,15 +727,35 @@
         if (pts.length >= 3000) break;
       }
       if (!pts.length) return null;
+      const r = window.Insights.pearson(pts.map((q) => q.x), pts.map((q) => q.y));
+      const xcol = col(c.x), ycol = col(c.y);
+      // Recta de ajuste (mínimos cuadrados) para visualizar la correlación.
+      let fit = null;
+      if (r !== null) {
+        const n = pts.length, mx = pts.reduce((a, q) => a + q.x, 0) / n, my = pts.reduce((a, q) => a + q.y, 0) / n;
+        const sxx = pts.reduce((a, q) => a + (q.x - mx) ** 2, 0), sxy = pts.reduce((a, q) => a + (q.x - mx) * (q.y - my), 0);
+        if (sxx) {
+          const b = sxy / sxx, a0 = my - b * mx;
+          const xmin = Math.min(...pts.map((q) => q.x)), xmax = Math.max(...pts.map((q) => q.x));
+          fit = [{ x: xmin, y: a0 + b * xmin }, { x: xmax, y: a0 + b * xmax }];
+        }
+      }
       return {
         type: 'scatter',
-        data: { datasets: [{ label: chartTitle(c), data: pts, backgroundColor: alpha(p.series[0], 0.55), borderColor: p.surface, borderWidth: 1, pointRadius: 4, pointHoverRadius: 6 }] },
+        data: { datasets: [
+          { label: chartTitle(c), data: pts, backgroundColor: alpha(p.series[0], 0.55), borderColor: p.surface, borderWidth: 1, pointRadius: exp ? 5 : 4, pointHoverRadius: 6 },
+          ...(fit ? [{ type: 'line', label: 'Ajuste', data: fit, borderColor: p.muted, borderDash: [6, 4], borderWidth: 2, pointRadius: 0, fill: false }] : []),
+        ] },
         options: {
-          responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
-          plugins: { legend: { display: false }, tooltip: { ...tooltip, callbacks: { label: (ctx) => `${c.x}: ${D.fmtNum(ctx.parsed.x)} · ${c.y}: ${D.fmtNum(ctx.parsed.y)}` } } },
+          ...base0,
+          plugins: {
+            legend: { display: false },
+            subtitle: r !== null ? { display: true, text: `r = ${r.toFixed(2)} · ${window.Insights.describeR(r)}`, color: p.muted, align: 'start', font: { size: exp ? 14 : 12 }, padding: { bottom: 8 } } : { display: false },
+            tooltip: { ...tooltip, callbacks: { label: (ctx) => `${c.x}: ${D.fmtValue(ctx.parsed.x, xcol)} · ${c.y}: ${D.fmtValue(ctx.parsed.y, ycol)}` } },
+          },
           scales: {
-            x: { ...valueAxis(c.x), beginAtZero: false, type: 'linear' },
-            y: { ...valueAxis(c.y), beginAtZero: false },
+            x: { ...valueAxis(c.x, xcol), beginAtZero: false, type: 'linear' },
+            y: { ...valueAxis(c.y, ycol), beginAtZero: false },
           },
         },
       };
@@ -601,13 +773,13 @@
     const values = data.map((d) => d.value);
     const selected = (d) => !own || own.has(d.raw);
     const valueName = c.agg === 'count' ? 'Registros' : `${AGG_LABEL[c.agg]} de ${c.y}`;
-    const onClick = xc.type === 'text' ? (evt, els) => {
+    const onClick = xc.type === 'text' && !exp ? (evt, els) => {
       if (!els.length) return;
       const d = data[els[0].index];
       // Diferir: Chart.js sigue procesando el evento y no debe destruirse dentro de él.
       if (d && !d.other) setTimeout(() => toggleFilter(c.x, d.raw), 0);
     } : undefined;
-    const onHover = (evt, els) => { evt.native.target.style.cursor = els.length && onClick ? 'pointer' : 'default'; };
+    const onHover = exp ? undefined : (evt, els) => { evt.native.target.style.cursor = els.length && onClick ? 'pointer' : 'default'; };
     const tooltipCb = {
       ...tooltip,
       callbacks: {
@@ -629,9 +801,9 @@
         type: 'doughnut',
         data: { labels, datasets: [{ data: values, backgroundColor: colors.map((col, i) => (selected(data[i]) ? col : alpha(col, 0.25))), borderColor: p.surface, borderWidth: 2, hoverOffset: 6 }] },
         options: {
-          responsive: true, maintainAspectRatio: false, cutout: '58%', animation: { duration: 300 }, onClick, onHover,
+          ...base0, cutout: '58%', onClick, onHover,
           plugins: {
-            legend: { position: 'right', labels: { color: p.text, usePointStyle: true, pointStyle: 'circle', boxWidth: 8, padding: 12, generateLabels: (ch) => Chart.overrides.doughnut.plugins.legend.labels.generateLabels(ch).map((l) => ({ ...l, text: truncate(l.text, 22) })) } },
+            legend: { position: mobile ? 'bottom' : 'right', labels: { color: p.text, usePointStyle: true, pointStyle: 'circle', boxWidth: 8, padding: 12, font: exp ? { size: 13 } : undefined, generateLabels: (ch) => Chart.overrides.doughnut.plugins.legend.labels.generateLabels(ch).map((l) => ({ ...l, text: truncate(l.text, 22) })) } },
             tooltip: tooltipCb,
           },
         },
@@ -665,24 +837,36 @@
       tooltipCb.callbacks.label = (ctx) => ` ${ctx.dataset.label}: ${fmtV(c.type === 'hbar' ? ctx.parsed.x : ctx.parsed.y)}`;
     }
     const legend = multi
-      ? { display: true, position: 'top', align: 'start', labels: { color: p.text, usePointStyle: true, pointStyle: 'circle', boxWidth: 8, padding: 12 } }
+      ? { display: true, position: mobile ? 'bottom' : 'top', align: 'start', labels: { color: p.text, usePointStyle: true, pointStyle: 'circle', boxWidth: 8, padding: 12, font: exp ? { size: 13 } : undefined } }
       : { display: false };
-    const subtitle = note ? { display: true, text: note, color: p.muted, align: 'start', font: { size: 11 } } : { display: false };
+    // Línea de tendencia (regresión lineal) en series de tiempo con una sola serie.
+    let trendSet = null;
+    if ((c.type === 'line' || c.type === 'area') && c.trend && !multi && xc.type === 'date') {
+      const lr = window.Insights.linreg(values);
+      if (lr) {
+        const meanV = values.filter((v) => typeof v === 'number').reduce((a, v, _, arr) => a + v / arr.length, 0);
+        const rel = meanV ? (lr.slope / Math.abs(meanV)) * 100 : 0;
+        const per = { day: 'día', week: 'semana', month: 'mes', quarter: 'trimestre', year: 'año' }[c.grain] || 'periodo';
+        note = note || `Línea punteada: tendencia ${lr.slope >= 0 ? 'al alza' : 'a la baja'} (${rel >= 0 ? '+' : ''}${D.fmtNum(Math.round(rel * 10) / 10)}% por ${per})`;
+        trendSet = { label: 'Tendencia', data: values.map((_, i) => lr.at(i)), borderColor: p.muted, borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 0, fill: false, tension: 0 };
+      }
+    }
+    const subtitle = note ? { display: true, text: note, color: p.muted, align: 'start', font: { size: exp ? 13 : 11 }, padding: { bottom: 6 } } : { display: false };
 
     if (c.type === 'line' || c.type === 'area') {
       return {
         type: 'line',
         data: {
           labels,
-          datasets: sets.map((st) => ({
+          datasets: [...sets.map((st) => ({
             label: st.label, data: st.values, borderColor: st.color, backgroundColor: alpha(st.color, multi ? 0.08 : 0.14), fill: c.type === 'area' && !multi ? 'origin' : false,
-            borderWidth: 2, tension: 0.25, pointRadius: data.length > 40 ? 0 : 3, pointHoverRadius: 5, pointBackgroundColor: st.color, pointBorderColor: p.surface, pointBorderWidth: 2, spanGaps: true,
-          })),
+            borderWidth: exp ? 2.5 : 2, tension: 0.25, pointRadius: data.length > 40 ? 0 : 3, pointHoverRadius: 5, pointBackgroundColor: st.color, pointBorderColor: p.surface, pointBorderWidth: 2, spanGaps: true,
+          })), ...(trendSet ? [trendSet] : [])],
         },
         options: {
-          responsive: true, maintainAspectRatio: false, animation: { duration: 300 }, onClick, onHover,
+          ...base0, onClick, onHover,
           interaction: { mode: 'index', intersect: false },
-          plugins: { legend, subtitle, tooltip: tooltipCb },
+          plugins: { legend, subtitle, tooltip: { ...tooltipCb, filter: (it) => it.dataset.label !== 'Tendencia' } },
           scales: { x: { ...axis(), grid: { display: false } }, y: { ...valueAxis(), beginAtZero: !multi && !c.ys } },
         },
       };
@@ -694,7 +878,7 @@
       data: { labels, datasets: sets.map((st) => ({ label: st.label, data: st.values, backgroundColor: st.bg, borderColor: p.surface, borderWidth: multi ? 1 : 0, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 44, categoryPercentage: 0.8, barPercentage: 0.9 })) },
       options: {
         indexAxis: horizontal ? 'y' : 'x',
-        responsive: true, maintainAspectRatio: false, animation: { duration: 300 }, onClick, onHover,
+        ...base0, onClick, onHover,
         interaction: { mode: multi ? 'index' : 'nearest', axis: horizontal ? 'y' : 'x', intersect: false },
         plugins: { legend, subtitle, tooltip: tooltipCb },
         scales: horizontal
@@ -978,6 +1162,8 @@
   function analyzeData() {
     const t = state.tbl;
     state.report = C.analyze(t);
+    state.outliers = window.Insights.outlierRows(state.rows, metrics());
+    if (!state.outliers.rows.size) state.excludeOutliers = false;
     state.report.visible = state.report.issues.filter((i) => !t.ignored.has(i.id));
     const warns = state.report.visible.filter((i) => i.severity === 'warn').length;
     const badge = $('#cleanBadge');
@@ -1151,12 +1337,12 @@
   // ---------- Tabla ----------
 
   function tableRows() {
-    let rows = filteredRows();
+    let rows = filteredRows(undefined, { table: true });
     const q = state.table.search.trim().toLowerCase();
     if (q) {
       rows = rows.filter((r) => state.columns.some((c) => {
         const v = r[c.name];
-        return v !== null && D.fmtCell(v, c.type, c.percent).toLowerCase().includes(q);
+        return v !== null && D.fmtCell(v, c.type, c.percent, c.currency).toLowerCase().includes(q);
       }));
     }
     const { sort, dir } = state.table;
@@ -1184,7 +1370,7 @@
       class: c.type === 'number' ? 'num' : '', scope: 'col', 'aria-sort': sort === c.name ? (dir > 0 ? 'ascending' : 'descending') : 'none',
       onclick: () => { state.table.dir = state.table.sort === c.name ? -state.table.dir : 1; state.table.sort = c.name; renderTable(); },
     }, c.name, el('span', { class: 'type' }, sort === c.name ? (dir > 0 ? '▲' : '▼') : typeName[c.type])))));
-    const tbody = el('tbody', {}, slice.map((r) => el('tr', {}, state.columns.map((c) => el('td', { class: c.type === 'number' ? 'num' : '' }, D.fmtCell(r[c.name], c.type, c.percent))))));
+    const tbody = el('tbody', {}, slice.map((r) => el('tr', {}, state.columns.map((c) => el('td', { class: c.type === 'number' ? 'num' : '' }, D.fmtCell(r[c.name], c.type, c.percent, c.currency))))));
     $('#dataTable').replaceChildren(thead, tbody);
     $('#rowCount').textContent = `· ${D.fmtNum(rows.length)} filas`;
 
@@ -1203,10 +1389,110 @@
 
   $('#btnExport').addEventListener('click', () => exportCSV(tableRows(), '_filtrado'));
 
+  // ---------- Sesión: guardar y restaurar el estado completo ----------
+
+  function filtersSummary() {
+    const parts = Object.entries(state.filters).map(([c, set]) => `${c}: ${[...set].join(', ')}`);
+    const df = state.dateFilter;
+    if (df && (df.from || df.to)) parts.push(`${df.col}: ${df.from ? D.fmtDate(df.from) : '…'} – ${df.to ? D.fmtDate(df.to) : '…'}`);
+    if (state.excludeOutliers) parts.push(`sin ${state.outliers.rows.size} valores atípicos`);
+    return parts;
+  }
+
+  // Objeto plano (clonable) con todo lo necesario para reconstruir el dashboard.
+  function serialize() {
+    if (!state.book) return null;
+    const sheets = {};
+    state.book.order.forEach((n) => {
+      const t = state.book.sheets[n];
+      sheets[n] = { columns: t.columns.map((c) => ({ ...c })), rows: t.rows, meta: t.meta || {}, log: t.log || [], ignored: t.ignored ? [...t.ignored] : [] };
+    });
+    const df = state.dateFilter;
+    return {
+      id: state.sessionId,
+      fileName: state.fileName,
+      size: state.fileSize || 0,
+      loadedAt: state.loadedAt || Date.now(),
+      updatedAt: Date.now(),
+      sheet: state.sheet,
+      rowCount: state.rows.length,
+      book: { order: [...state.book.order], sheets },
+      dash: {
+        filters: Object.fromEntries(Object.entries(state.filters).map(([k, v]) => [k, [...v]])),
+        dateFilter: df ? { col: df.col, from: df.from ? df.from.getTime() : null, to: df.to ? df.to.getTime() : null } : null,
+        charts: state.charts.map((c) => ({ ...c })),
+        explorer: { ...state.explorer },
+        excludeOutliers: state.excludeOutliers,
+        aiInsights: state.aiInsights,
+        nextId: state.nextId,
+      },
+      health: state.report ? { score: state.report.score, stats: state.report.stats, cambios: (state.tbl && state.tbl.log) || [] } : null,
+    };
+  }
+
+  // Reconstruye fechas aunque el navegador las haya guardado como texto o número.
+  function reviveDates(t) {
+    const dateCols = t.columns.filter((c) => c.type === 'date').map((c) => c.name);
+    if (!dateCols.length) return;
+    t.rows.forEach((r) => dateCols.forEach((k) => {
+      const v = r[k];
+      if (v !== null && v !== undefined && !(v instanceof Date)) { const d = new Date(v); r[k] = isNaN(d) ? null : d; }
+    }));
+  }
+
+  function restore(rec) {
+    const sheets = {};
+    rec.book.order.forEach((n) => {
+      const src = rec.book.sheets[n];
+      const t = { columns: src.columns, rows: src.rows, meta: src.meta || {} };
+      reviveDates(t);
+      D.restat(t.columns, t.rows);
+      t.original = { columns: window.Cleaner.cloneCols(t.columns), rows: t.rows };
+      t.history = [];
+      t.log = src.log || [];
+      t.ignored = new Set(src.ignored || []);
+      sheets[n] = t;
+    });
+    openBook({ sheets, order: rec.book.order }, rec.fileName, { silent: true, sheet: rec.sheet, sessionId: rec.id, loadedAt: rec.loadedAt, size: rec.size });
+    const d = rec.dash || {};
+    const names = new Set(state.columns.map((c) => c.name));
+    state.filters = {};
+    Object.entries(d.filters || {}).forEach(([k, vals]) => { if (names.has(k) && vals.length) state.filters[k] = new Set(vals); });
+    if (d.dateFilter && names.has(d.dateFilter.col)) {
+      state.dateFilter = { col: d.dateFilter.col, from: d.dateFilter.from ? new Date(d.dateFilter.from) : null, to: d.dateFilter.to ? new Date(d.dateFilter.to) : null };
+    }
+    if (Array.isArray(d.charts) && d.charts.length) state.charts = d.charts.filter((c) => names.has(c.x));
+    if (d.explorer) state.explorer = { ...d.explorer };
+    state.excludeOutliers = !!d.excludeOutliers && state.outliers.rows.size > 0;
+    state.aiInsights = d.aiInsights || null;
+    state.nextId = Math.max(d.nextId || 1, ...state.charts.map((c) => c.id + 1));
+    buildFilters();
+    refresh();
+  }
+
+  // Vuelve a la pantalla de carga (nueva sesión).
+  function resetToUpload() {
+    state.instances.forEach((ch) => ch.destroy());
+    state.instances.clear();
+    state.book = null;
+    state.columns = [];
+    state.rows = [];
+    state.charts = [];
+    state.sessionId = null;
+    $('#dashView').hidden = true;
+    $('#uploadView').hidden = false;
+    ['#btnNewFile', '#btnAgent', '#fileInfo', '#sheetPicker', '#btnBook'].forEach((q) => { $(q).hidden = true; });
+    $('#sessionBanner').hidden = true;
+    document.querySelector('#agentClose') && document.querySelector('#agentClose').click();
+  }
+
   // Funciones que usa el asistente (js/agent.js).
   window.DashApp = {
     state, col, metrics, categories, timeInfo, defaultAgg, chartTitle, filteredRows, toast,
     openSheet, setData, commit, applyRecommended, runAction, undo, refresh, renderCharts, analyzeData, applySuggestion,
     restoreOriginal, syncFilters: () => { buildFilters(); refresh(); },
+    // Exportación y sesión (js/export.js, js/session.js)
+    buildConfig, palette, kpiTiles, insights, filtersSummary, saveFile, isMobile, renderInsights,
+    serialize, restore, resetToUpload, notifyChange,
   };
 })();

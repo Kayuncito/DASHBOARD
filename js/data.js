@@ -7,7 +7,40 @@
   function readFile(file) {
     const ext = (file.name.split('.').pop() || '').toLowerCase();
     if (['xlsx', 'xls', 'xlsm', 'xlsb', 'ods'].includes(ext)) return readWorkbook(file);
-    return file.text().then((text) => ({ sheets: { Datos: parseDelimited(text) }, order: ['Datos'] }));
+    return file.arrayBuffer().then((buf) => {
+      const { text, encoding } = decodeText(buf);
+      const table = parseDelimited(text);
+      table.meta.encoding = encoding;
+      return { sheets: { Datos: table }, order: ['Datos'] };
+    });
+  }
+
+  // Detecta la codificación: UTF-16 (BOM), UTF-8 válido o, si no, Windows-1252 (Excel en español: ñ, acentos).
+  function decodeText(buf) {
+    const b = new Uint8Array(buf);
+    if (b[0] === 0xff && b[1] === 0xfe) return { text: new TextDecoder('utf-16le').decode(b.subarray(2)), encoding: 'UTF-16 LE' };
+    if (b[0] === 0xfe && b[1] === 0xff) return { text: new TextDecoder('utf-16be').decode(b.subarray(2)), encoding: 'UTF-16 BE' };
+    try {
+      return { text: new TextDecoder('utf-8', { fatal: true }).decode(b), encoding: 'UTF-8' };
+    } catch {
+      return { text: new TextDecoder('windows-1252').decode(b), encoding: 'Windows-1252 (Latin-1)' };
+    }
+  }
+
+  // Elige el delimitador que produce el número de columnas más consistente entre líneas.
+  function detectDelimiter(text) {
+    const lines = text.split(/\r?\n/).filter((l) => l.trim()).slice(0, 80);
+    let best = { d: ',', score: 0 };
+    ['\t', ';', ',', '|'].forEach((d) => {
+      const counts = lines.map((l) => Papa.parse(l, { delimiter: d }).data[0]?.length - 1 || 0).filter((n) => n > 0);
+      if (!counts.length) return;
+      const freq = new Map();
+      counts.forEach((n) => freq.set(n, (freq.get(n) || 0) + 1));
+      const [mode, hits] = [...freq.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0];
+      const score = hits * Math.log2(mode + 1);
+      if (score > best.score) best = { d, score };
+    });
+    return best.d;
   }
 
   function readWorkbook(file) {
@@ -26,17 +59,17 @@
   }
 
   function parseDelimited(text) {
-    text = text.replace(/^﻿/, '');
-    const res = Papa.parse(text, {
-      skipEmptyLines: 'greedy',
-      delimitersToGuess: ['\t', ';', ',', '|'],
-    });
+    text = text.replace(/^\uFEFF/, '');
+    const delimiter = detectDelimiter(text);
+    const res = Papa.parse(text, { skipEmptyLines: 'greedy', delimiter });
     let matrix = res.data;
     // Archivos de texto sin delimitador claro pero con columnas separadas por espacios múltiples.
     if (matrix.length > 1 && matrix.every((r) => r.length === 1) && /\S {2,}\S/.test(text)) {
       matrix = text.split(/\r?\n/).filter((l) => l.trim()).map((l) => l.trim().split(/ {2,}/));
     }
-    return fromMatrix(matrix);
+    const table = fromMatrix(matrix);
+    table.meta.delimiter = { '\t': 'tabulador', ';': 'punto y coma', ',': 'coma', '|': 'barra |' }[delimiter];
+    return table;
   }
 
   // Celdas que no pudieron convertirse a su tipo (fila -> { columna: valor original }).
@@ -88,7 +121,7 @@
       else if (unique !== orig) meta.renamedHeaders.push({ from: orig, to: unique });
     }
 
-    const columns = names.map((name, i) => ({ name, ...inferType(body.map((r) => r[i])) }));
+    const columns = names.map((name, i) => ({ name, ...inferType(body.map((r) => r[i]), name) }));
     // Descartar columnas totalmente vacías.
     const keep = columns.map((c, i) => [c, i]).filter(([c]) => c.type !== 'empty');
     meta.emptyCols = columns.filter((c) => c.type === 'empty').map((c) => c.name);
@@ -99,7 +132,7 @@
       let bad = null;
       keep.forEach(([c, i]) => {
         const raw = r[i];
-        const v = convert(raw, c.type);
+        const v = convert(raw, c.type, c.serial);
         if (v === null && !isBlank(raw)) (bad || (bad = {}))[c.name] = raw;
         if (c.type === 'text' && typeof raw === 'string' && raw !== v && v !== null) meta.trimmed++;
         o[c.name] = v;
@@ -169,30 +202,55 @@
     return dt.getMonth() === mo - 1 ? dt : null;
   }
 
-  function inferType(values) {
+  // Fecha serial de Excel (días desde 1899-12-30) a Date local.
+  function excelSerial(n) {
+    const ms = Math.round((n - 25569) * 86400000);
+    const u = new Date(ms);
+    return new Date(u.getUTCFullYear(), u.getUTCMonth(), u.getUTCDate(), u.getUTCHours(), u.getUTCMinutes(), u.getUTCSeconds());
+  }
+
+  // Revisa TODAS las filas (no una muestra) para decidir el tipo de la columna.
+  function inferType(values, name = '') {
     const vals = values.filter((v) => !isBlank(v));
     if (!vals.length) return { type: 'empty' };
-    const sample = vals.length > 2000 ? vals.filter((_, i) => i % Math.ceil(vals.length / 2000) === 0) : vals;
-    const ratio = (fn) => sample.filter((v) => fn(v) !== null).length / sample.length;
-    if (sample.some((v) => v instanceof Date) && ratio(parseDate) >= 0.9) return { type: 'date' };
-    // Claves con ceros a la izquierda ("01", "007") son códigos, no cantidades.
-    if (sample.filter((v) => typeof v === 'string' && /^0\d+$/.test(v.trim())).length >= sample.length * 0.2) return { type: 'text' };
-    if (ratio(parseNumber) >= 0.95) {
-      // Años sueltos (2019, 2020…) se tratan como categoría.
-      const nums = sample.map(parseNumber).filter((n) => n !== null);
-      const looksYear = nums.every((n) => Number.isInteger(n) && n >= 1900 && n <= 2100);
-      const uniq = new Set(nums).size;
-      if (looksYear && uniq <= 50) return { type: 'text' };
-      return { type: 'number' };
+    let dates = 0, nums = 0, zeroLead = 0, money = 0, pctSign = 0, isDateObj = false;
+    const numVals = [];
+    for (const v of vals) {
+      if (v instanceof Date) { isDateObj = true; dates++; continue; }
+      const n = parseNumber(v);
+      if (n !== null) {
+        nums++;
+        numVals.push(n);
+        if (typeof v === 'string') {
+          if (/^0\d+$/.test(v.trim())) zeroLead++;
+          if (/[$€£]/.test(v)) money++;
+          if (/%\s*$/.test(v)) pctSign++;
+        }
+      } else if (parseDate(v) !== null) dates++;
     }
-    if (ratio(parseDate) >= 0.9) return { type: 'date' };
+    const n = vals.length;
+    if (isDateObj && dates / n >= 0.9) return { type: 'date' };
+    // Claves con ceros a la izquierda ("01", "007") son códigos, no cantidades.
+    if (zeroLead >= n * 0.2) return { type: 'text' };
+    if (nums / n >= 0.95) {
+      const allInt = numVals.every(Number.isInteger);
+      // Fechas seriales de Excel en columnas llamadas "fecha".
+      if (/fecha|date|d[ií]a|periodo/i.test(name) && allInt && numVals.every((x) => x >= 20000 && x <= 80000)) return { type: 'date', serial: true };
+      // Años sueltos (2019, 2020…) se tratan como categoría.
+      if (allInt && numVals.every((x) => x >= 1900 && x <= 2100) && new Set(numVals).size <= 50) return { type: 'text' };
+      return { type: 'number', currency: money >= nums * 0.3 ? '$' : '', pctSign: pctSign >= nums * 0.3 };
+    }
+    if (dates / n >= 0.9) return { type: 'date' };
     return { type: 'text' };
   }
 
-  function convert(v, type) {
+  function convert(v, type, serial) {
     if (isBlank(v)) return null;
     if (type === 'number') return parseNumber(v);
-    if (type === 'date') return parseDate(v);
+    if (type === 'date') {
+      if (serial && typeof v !== 'object') { const n = parseNumber(v); return n === null ? null : excelSerial(n); }
+      return parseDate(v);
+    }
     if (v instanceof Date) return v.toLocaleDateString('es');
     return String(v).replace(/\s+/g, ' ').trim();
   }
@@ -209,6 +267,9 @@
       // Categórica si se repiten valores con suficiente frecuencia.
       const longText = col.values.slice(0, 50).some((v) => /^https?:\/\//i.test(v)) || col.values.slice(0, 50).reduce((a, v) => a + v.length, 0) / Math.min(50, col.values.length || 1) > 40;
       col.categorical = !longText && counts.size <= 200 && counts.size <= Math.max(12, vals.length * 0.5);
+      // Identificadores de texto (folios, códigos): todos distintos y con forma de código, o nombre de ID.
+      const codeLike = col.values.slice(0, 100).every((v) => /^[A-Z0-9][A-Z0-9_./-]*\d[A-Z0-9_./-]*$/i.test(v));
+      col.idLike = counts.size === vals.length && vals.length > 20 && (codeLike || /(^|\b)(id|folio|uuid|c[oó]digo|clave|sku|rfc|curp)\b/i.test(col.name));
     } else if (col.type === 'number') {
       let min = Infinity, max = -Infinity, sum = 0;
       vals.forEach((v) => { if (v < min) min = v; if (v > max) max = v; sum += v; });
@@ -216,7 +277,11 @@
       col.integer = vals.every(Number.isInteger);
       // Identificadores (IDs consecutivos) no son buenas métricas.
       // Porcentajes guardados como fracción (0.25 = 25%), p. ej. celdas de Excel con formato %.
-      col.percent = /(%|porcentaje|participaci|tasa|proporci|pct|ratio|rate|share|^t[a-z]?_)/i.test(col.name) && min >= -1 && max <= 1 && !col.integer;
+      col.percent = !!col.pctSign || (/(%|porcentaje|participaci|tasa|proporci|pct|ratio|rate|share|^t[a-z]?_)/i.test(col.name) && min >= -1 && max <= 1 && !col.integer);
+      // Estadísticos para insights y para el contexto de la IA.
+      const mean = vals.length ? sum / vals.length : 0;
+      col.mean = mean;
+      col.std = vals.length > 1 ? Math.sqrt(vals.reduce((a, v) => a + (v - mean) ** 2, 0) / (vals.length - 1)) : 0;
       // Números que son posiciones o partes de fecha (mes 1-12, trimestre 1-4, día), no cantidades.
       col.ordinalLike = col.integer && max <= 31 && min >= 0 && /(num|n[uú]mero|mes|month|d[ií]a|day|trimestre|quarter|semana|week|bimestre|semestre|orden|rank)/i.test(col.name);
       col.idLike = col.integer && col.unique === vals.length && vals.length > 20 && /(^|\b)(id|folio|no\.?|n[uú]m|c[oó]digo|clave)\b/i.test(col.name);
@@ -334,9 +399,20 @@
   function fmtDate(d) { return d ? d.toLocaleDateString('es-MX', { year: 'numeric', month: 'short', day: 'numeric' }) : '—'; }
   const pf = new Intl.NumberFormat('es-MX', { style: 'percent', maximumFractionDigits: 2 });
   function fmtPct(v) { return v === null || v === undefined || Number.isNaN(v) ? '—' : pf.format(v); }
-  function fmtCell(v, type, percent) {
+  // Formateador global: cifra completa o abreviada según la columna (moneda, porcentaje o número).
+  const nfCompact2 = new Intl.NumberFormat('es-MX', { notation: 'compact', maximumFractionDigits: 2 });
+  function fmtValue(v, col, compact = false) {
+    if (v === null || v === undefined || Number.isNaN(v)) return '—';
+    if (typeof v !== 'number') return String(v);
+    if (col && col.percent) return compact ? new Intl.NumberFormat('es-MX', { style: 'percent', maximumFractionDigits: 1 }).format(v) : fmtPct(v);
+    const cur = col && col.currency ? col.currency : '';
+    const body = compact && Math.abs(v) >= 10000 ? nfCompact2.format(Math.abs(v)) : nf.format(Math.abs(v));
+    return `${v < 0 ? '-' : ''}${cur}${body}`;
+  }
+  const isCompacted = (v, col) => typeof v === 'number' && fmtValue(v, col, true) !== fmtValue(v, col, false);
+  function fmtCell(v, type, percent, currency) {
     if (v === null || v === undefined) return '';
-    if (type === 'number') return percent ? fmtPct(v) : fmtNum(v);
+    if (type === 'number') return percent ? fmtPct(v) : fmtValue(v, { currency });
     if (type === 'date') {
       const hasTime = v.getHours() || v.getMinutes();
       return hasTime ? v.toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' }) : fmtDate(v);
@@ -344,5 +420,5 @@
     return String(v);
   }
 
-  window.DataKit = { invalidCells, restat, parseNumber, readFile, parseDelimited, aggregate, summarize, autoGrain, fmtNum, fmtCompact, fmtDate, fmtCell, fmtPct, dateKey };
+  window.DataKit = { invalidCells, restat, parseNumber, readFile, parseDelimited, aggregate, summarize, autoGrain, fmtNum, fmtCompact, fmtDate, fmtCell, fmtPct, fmtValue, isCompacted, dateKey, decodeText, excelSerial };
 })();
